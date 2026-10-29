@@ -172,7 +172,7 @@ unsafe fn input_images(ptr: *const SwRgbRef, n: usize) -> SwResult<Vec<Image>> {
 
 #[no_mangle]
 pub extern "C" fn sw_api_version() -> u32 {
-    4
+    5
 }
 
 #[no_mangle]
@@ -367,7 +367,7 @@ pub unsafe extern "C" fn sw_stitch_rgbs(
 
 // Layered reconstruction and planning ABI. The original C ABI functions
 // remain available unchanged for image load/save, compose and basic stitching.
-use scrollweave_core::layered::{self, LayeredOptions, Segmentation};
+use scrollweave_core::layered::{self, ContentRect, LayeredOptions, Segmentation};
 use scrollweave_core::planner::{self, Goal, PlannerInput, PlannerOptions};
 
 #[repr(C)]
@@ -381,6 +381,8 @@ pub struct SwLayeredConfig {
     pub positions: *const i32,
     pub viewport_top: i32,
     pub viewport_bottom: i32,
+    pub content_left: i32,
+    pub content_right: i32,
     pub appearance: u8,
     pub segmentation: u8,
     pub include_transients: u8,
@@ -713,8 +715,23 @@ pub unsafe extern "C" fn sw_layered_reconstruct_rgbs(
                     .collect::<Vec<_>>(),
             )
         };
+        let content = if config.content_left < 0 && config.content_right < 0 {
+            None
+        } else {
+            if config.content_left < 0 || config.content_right < 0 {
+                return Err(SwError::input("content bounds must both be set"));
+            }
+            let (top, bottom) = viewport.unwrap_or((0, images[0].height));
+            Some(ContentRect {
+                left: config.content_left as usize,
+                top,
+                right: config.content_right as usize,
+                bottom,
+            })
+        };
         let options = LayeredOptions {
             viewport,
+            content,
             training_indices: training,
             appearance: config.appearance != 0,
             appearance_threshold: config.appearance_threshold,

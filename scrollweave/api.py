@@ -71,14 +71,20 @@ class Image:
 
 @dataclass(frozen=True, slots=True)
 class Viewport:
-    """Content band in source-frame coordinates; ``bottom`` is exclusive."""
+    """Content region in source-frame coordinates; ``bottom/right`` are exclusive."""
 
     top: int
     bottom: int
+    left: int = 0
+    right: int | None = None
 
     def __post_init__(self):
         if self.top < 0 or self.bottom <= self.top:
             raise ValueError('viewport must satisfy 0 <= top < bottom')
+        if self.left < 0:
+            raise ValueError('viewport left must be non-negative')
+        if self.right is not None and self.right <= self.left:
+            raise ValueError('viewport right must be greater than left')
 
     @property
     def height(self) -> int:
@@ -86,6 +92,14 @@ class Viewport:
 
     def pair(self) -> tuple[int, int]:
         return self.top, self.bottom
+
+    def bounds(self, width: int) -> tuple[int, int, int, int] | None:
+        right = width if self.right is None else self.right
+        if self.left >= right or right > width:
+            raise ValueError('viewport is outside frame bounds')
+        if self.left == 0 and right == width:
+            return None
+        return self.left, self.top, right, self.bottom
 
 
 @dataclass(frozen=True, slots=True)

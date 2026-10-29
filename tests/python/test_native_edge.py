@@ -155,6 +155,66 @@ class NativeLayeredContractTests(unittest.TestCase):
             ids = (root / 'source_ids.i32le').read_bytes()
             self.assertEqual(len(ids), page.width * page.height * 4)
 
+    def test_content_region_crops_frames(self):
+        page = page_image(20, 100)
+        frames = frames_of(page, [0, 20, 40], frame_height=50)
+        result = stitch_layered(
+            frames,
+            scroll=[0, 20, 40],
+            viewport=Viewport(top=10, bottom=50, left=5, right=15),
+            options=LayeredOptions(appearance=False, texture_strength=0.0),
+        )
+        expected = b''.join(
+            page.rgb[(y * page.width + 5) * 3 : (y * page.width + 15) * 3] for y in range(10, 90)
+        )
+        self.assertEqual((result.image.width, result.image.height), (10, 80))
+        self.assertEqual(result.image.rgb, expected)
+        self.assertEqual(result.scroll, (10, 30, 50))
+
+    def test_auto_detects_fixed_chrome(self):
+        width, height, header, sidebar, frame_height = 200, 200, 12, 80, 60
+        page = Image(
+            width,
+            height,
+            b''.join(
+                bytes(((y * 37) % 256, (y * 91) % 256, (y * 17) % 256)) * width
+                for y in range(height)
+            ),
+        )
+        frames = []
+        for scroll in (0, 30, 60):
+            data = bytearray()
+            for y in range(frame_height):
+                for x in range(width):
+                    if y < header - 1:
+                        color = (250, 250, 250)
+                    elif y == header - 1:
+                        color = (40, 40, 40)
+                    elif x < sidebar - 1:
+                        color = (245, 245, 245)
+                    elif x == sidebar - 1:
+                        color = (40, 40, 40)
+                    else:
+                        source_y = scroll + y - header
+                        offset = (source_y * width + x) * 3
+                        color = page.rgb[offset : offset + 3]
+                    data.extend(color)
+            frames.append(Image(width, frame_height, bytes(data)))
+        result = stitch_layered(
+            frames,
+            scroll=[0, 30, 60],
+            options=LayeredOptions(appearance=False, texture_strength=0.0),
+        )
+        expected = Image(
+            width - sidebar,
+            108,
+            b''.join(
+                page.rgb[(y * width + sidebar) * 3 : (y * width + width) * 3] for y in range(108)
+            ),
+        )
+        self.assertEqual((result.image.width, result.image.height), (120, 108))
+        self.assertEqual(result.image.rgb, expected.rgb)
+
     def test_prior_and_plan_validation(self):
         page = page_image()
         frames = frames_of(page, [0, 20, 40])

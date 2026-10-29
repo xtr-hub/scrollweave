@@ -111,8 +111,8 @@ def _load():
 def _configure(lib):
     err = [c.c_void_p, c.c_size_t]
     lib.sw_api_version.restype = c.c_uint32
-    if lib.sw_api_version() != 4:
-        raise NativeUnavailable('ScrollWeave Rust ABI version mismatch (v4 required)')
+    if lib.sw_api_version() != 5:
+        raise NativeUnavailable('ScrollWeave Rust ABI version mismatch (v5 required)')
     lib.sw_read_image.argtypes = [c.c_char_p, c.POINTER(_Owned), *err]
     lib.sw_read_image.restype = c.c_int32
     lib.sw_write_image.argtypes = [c.POINTER(_Ref), c.c_char_p, *err]
@@ -298,6 +298,8 @@ class _LayeredConfig(c.Structure):
         ('positions', c.POINTER(c.c_int32)),
         ('viewport_top', c.c_int32),
         ('viewport_bottom', c.c_int32),
+        ('content_left', c.c_int32),
+        ('content_right', c.c_int32),
         ('appearance', c.c_uint8),
         ('segmentation', c.c_uint8),
         ('include_transients', c.c_uint8),
@@ -391,8 +393,8 @@ class _LayeredHandle:
 
 def _layered_run(images, positions, viewport, options, diagnostics):
     lib = _load()
-    if lib.sw_api_version() != 4:
-        raise NativeUnavailable('layered Rust reconstruction requires ABI version 4')
+    if lib.sw_api_version() != 5:
+        raise NativeUnavailable('layered Rust reconstruction requires ABI version 5')
     from .api import (
         Diagnostics,
         Evidence,
@@ -439,10 +441,14 @@ def _layered_run(images, positions, viewport, options, diagnostics):
         train = (c.c_uint32 * len(training_values))(*training_values)
 
     top, bottom = (-1, -1) if viewport is None else viewport.pair()
+    content = viewport.bounds(width) if viewport is not None else None
+    content_left, content_right = (content[0], content[2]) if content else (-1, -1)
     config = _LayeredConfig(
         poses,
         top,
         bottom,
+        content_left,
+        content_right,
         bool(options.appearance),
         int(options.segmentation == Segmentation.GRAPH_CUT),
         bool(options.include_transients),
@@ -525,7 +531,7 @@ def _layered_run(images, positions, viewport, options, diagnostics):
         )
         result = LayeredResult(
             image=_copy_owned(response.image),
-            scroll=tuple(int(value) for value in positions),
+            scroll=tuple(int(value) + (top if content else 0) for value in positions),
             viewport=Viewport(response.viewport_top, response.viewport_bottom),
             evidence=evidence,
             geometry_mode=modes[response.geometry_mode],

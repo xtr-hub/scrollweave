@@ -62,7 +62,7 @@ def main(argv=None):
 
     native = _load()
     abi = native.sw_api_version()
-    check(abi == 4, 'native ABI is v4', str(abi))
+    check(abi == 5, 'native ABI is v5', str(abi))
     check(hasattr(native, 'sw_layered_reconstruct_rgbs'), 'layered FFI symbol present')
     check(hasattr(native, 'sw_layered_plan'), 'planner FFI symbol present')
 

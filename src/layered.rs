@@ -9,9 +9,25 @@ pub enum Segmentation {
     Temporal,
     GraphCut,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContentRect {
+    pub left: usize,
+    pub top: usize,
+    pub right: usize,
+    pub bottom: usize,
+}
+impl ContentRect {
+    pub fn width(self) -> usize {
+        self.right - self.left
+    }
+    pub fn height(self) -> usize {
+        self.bottom - self.top
+    }
+}
 #[derive(Clone, Debug)]
 pub struct LayeredOptions {
     pub viewport: Option<(usize, usize)>,
+    pub content: Option<ContentRect>,
     pub appearance: bool,
     pub appearance_threshold: f32,
     pub texture_strength: f32,
@@ -26,6 +42,7 @@ impl Default for LayeredOptions {
     fn default() -> Self {
         Self {
             viewport: None,
+            content: None,
             appearance: true,
             appearance_threshold: 0.60,
             texture_strength: 80.,
@@ -254,7 +271,7 @@ fn infer_layers(
                 }
             })
             .collect();
-        if observations.len() < 3 {
+        if observations.len() < 2 {
             continue;
         }
         for x in 0..w {
@@ -319,7 +336,7 @@ fn infer_layers(
             indices.push(i)
         }
     }
-    if indices.len() >= 3 {
+    if indices.len() >= 2 {
         let mut stationary = vec![0u8; wh];
         let mut edge = vec![0u8; wh];
         for y in top..bottom {
@@ -606,6 +623,123 @@ fn texture_maps(images: &[Image]) -> Vec<Vec<u8>> {
     }
     maps
 }
+fn crop_mask(mask: &[u8], n: usize, width: usize, height: usize, rect: ContentRect) -> Vec<u8> {
+    let out_width = rect.width();
+    let out_height = rect.height();
+    let mut out = vec![0u8; n * out_width * out_height];
+    for frame in 0..n {
+        for y in 0..out_height {
+            let source = (frame * height + rect.top + y) * width + rect.left;
+            let target = (frame * out_height + y) * out_width;
+            out[target..target + out_width].copy_from_slice(&mask[source..source + out_width]);
+        }
+    }
+    out
+}
+
+fn longest_run(flags: impl Iterator<Item = bool>) -> usize {
+    let mut best = 0;
+    let mut current = 0;
+    for flag in flags {
+        if flag {
+            current += 1;
+            best = best.max(current);
+        } else {
+            current = 0;
+        }
+    }
+    best
+}
+
+/// Find fixed page chrome from persistent full-width/height edges.
+///
+/// A fixed header usually leaves a full-width horizontal border, and a fixed
+/// sidebar a full-height vertical border. Content edges move with scrolling and
+/// therefore do not persist at the same screen coordinate.
+pub fn infer_content_rect(images: &[Image]) -> Option<ContentRect> {
+    if images.len() < 2 {
+        return None;
+    }
+    let width = images[0].width;
+    let height = images[0].height;
+    if images
+        .iter()
+        .any(|image| image.width != width || image.height != height)
+    {
+        return None;
+    }
+    let mut persistent = vec![true; width * height];
+    let mut stable = vec![true; width * height];
+    for (frame_index, image) in images.iter().enumerate() {
+        let mut edges = vec![false; width * height];
+        for y in 1..height.saturating_sub(1) {
+            for x in 1..width.saturating_sub(1) {
+                let gray = |xx: usize, yy: usize| {
+                    let pixel = image.pixel(xx, yy);
+                    (pixel[0] as i32 * 77 + pixel[1] as i32 * 150 + pixel[2] as i32 * 29) >> 8
+                };
+                let gx = (gray(x + 1, y) - gray(x - 1, y)).abs();
+                let gy = (gray(x, y + 1) - gray(x, y - 1)).abs();
+                edges[y * width + x] = gx + gy > 24;
+            }
+        }
+        for index in 0..persistent.len() {
+            persistent[index] &= edges[index];
+            if frame_index > 0 {
+                stable[index] &= images[0].rgb[index * 3..index * 3 + 3]
+                    .iter()
+                    .zip(&image.rgb[index * 3..index * 3 + 3])
+                    .all(|(a, b)| a.abs_diff(*b) <= 1);
+            }
+        }
+    }
+    let mut stable_columns = vec![0usize; width];
+    let mut stable_rows = vec![0usize; height];
+    for y in 0..height {
+        for x in 0..width {
+            if stable[y * width + x] {
+                stable_columns[x] += 1;
+                stable_rows[y] += 1;
+            }
+        }
+    }
+    let mut column_prefix = vec![0usize; width + 1];
+    let mut row_prefix = vec![0usize; height + 1];
+    for x in 0..width {
+        column_prefix[x + 1] = column_prefix[x] + stable_columns[x];
+    }
+    for y in 0..height {
+        row_prefix[y + 1] = row_prefix[y] + stable_rows[y];
+    }
+
+    let mut top = None;
+    for y in 10..height / 3 {
+        let run = longest_run((0..width).map(|x| persistent[y * width + x]));
+        let stable_above = row_prefix[y] as f64 / (y * width).max(1) as f64;
+        if run * 100 >= width * 55 && stable_above >= 0.9 && top.is_none() && y + 2 < height {
+            top = Some(y + 2);
+        }
+    }
+    let mut left = None;
+    for x in 40..width / 2 {
+        let run = longest_run((0..height).map(|y| persistent[y * width + x]));
+        let stable_left = column_prefix[x] as f64 / (x * height).max(1) as f64;
+        if run * 100 >= height * 55 && stable_left >= 0.75 && x + 1 >= 80 {
+            left = Some(x + 1);
+        }
+    }
+    if top.is_none() && left.is_none() {
+        None
+    } else {
+        Some(ContentRect {
+            left: left.unwrap_or(0),
+            top: top.unwrap_or(0),
+            right: width,
+            bottom: height,
+        })
+    }
+}
+
 pub fn reconstruct(
     images: &[Image],
     positions: &[i32],
@@ -617,6 +751,48 @@ pub fn reconstruct(
     let (w, h) = (images[0].width, images[0].height);
     if images.iter().any(|im| im.width != w || im.height != h) {
         return err("layered reconstruction requires identical frame geometry");
+    }
+    if opts.content.is_none() && opts.viewport.is_none() {
+        if let Some(content) = infer_content_rect(images) {
+            let mut inner = opts.clone();
+            inner.content = Some(content);
+            return reconstruct(images, positions, &inner);
+        }
+    }
+    for mask in [&opts.flat_mask, &opts.recurrent_mask]
+        .into_iter()
+        .flatten()
+    {
+        if mask.len() != images.len() * w * h {
+            return err("prior mask must be N*H*W bytes");
+        }
+    }
+    if let Some(rect) = opts.content {
+        if rect.left >= rect.right || rect.top >= rect.bottom || rect.right > w || rect.bottom > h {
+            return err("content region is outside frame bounds");
+        }
+        let cropped = images
+            .iter()
+            .map(|image| image.crop(rect.left, rect.top, rect.width(), rect.height()))
+            .collect::<SwResult<Vec<_>>>()?;
+        let adjusted = positions
+            .iter()
+            .map(|&position| {
+                position
+                    .checked_add(rect.top as i32)
+                    .ok_or_else(|| crate::image::SwError::limit("scroll position overflow"))
+            })
+            .collect::<SwResult<Vec<_>>>()?;
+        let mut inner = opts.clone();
+        inner.content = None;
+        inner.viewport = Some((0, rect.height()));
+        if let Some(mask) = &opts.recurrent_mask {
+            inner.recurrent_mask = Some(crop_mask(mask, images.len(), w, h, rect));
+        }
+        if let Some(mask) = &opts.flat_mask {
+            inner.flat_mask = Some(crop_mask(mask, images.len(), w, h, rect));
+        }
+        return reconstruct(&cropped, &adjusted, &inner);
     }
     let n = images.len();
     let wh = w * h;
