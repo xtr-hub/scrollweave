@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import os
 import subprocess
 import sys
@@ -36,9 +37,21 @@ def _libname():
 def _metadata():
     return (
         f'Metadata-Version: 2.1\nName: {DIST}\nVersion: {VERSION}\n'
-        'Summary: Zero-dependency Python frontend for Rust screenshot reconstruction\n'
+        'Summary: Rust-core, zero third-party dependency Python screenshot stitching library\n'
         'Requires-Python: >=3.10\n'
         'License: MIT\n'
+        'Project-URL: Homepage, https://github.com/xtr-hub/scrollweave\n'
+        'Project-URL: Repository, https://github.com/xtr-hub/scrollweave\n'
+        'Project-URL: Documentation, https://github.com/xtr-hub/scrollweave/blob/main/docs/ARCHITECTURE.md\n'
+        'Keywords: screenshot,stitching,scrolling,rust,computer-vision\n'
+        'Classifier: Development Status :: 4 - Beta\n'
+        'Classifier: Intended Audience :: Developers\n'
+        'Classifier: License :: OSI Approved :: MIT License\n'
+        'Classifier: Programming Language :: Python :: 3\n'
+        'Classifier: Programming Language :: Python :: 3 :: Only\n'
+        'Classifier: Programming Language :: Rust\n'
+        'Classifier: Topic :: Multimedia :: Graphics\n'
+        'Classifier: Topic :: Software Development :: Libraries :: Python Modules\n'
         'Description-Content-Type: text/markdown\n\n'
         + (ROOT / 'README.md').read_text(encoding='utf-8')
     )
@@ -157,7 +170,12 @@ def build_sdist(sdist_directory, config_settings=None):
                     'target',
                     '__pycache__',
                     '.pytest_cache',
+                    '.ruff_cache',
+                    '.mypy_cache',
                     '.venv',
+                    'venv',
+                    '.idea',
+                    '.vscode',
                     'dist',
                     'output',
                     'benchmark_data',
@@ -169,4 +187,9 @@ def build_sdist(sdist_directory, config_settings=None):
                     continue
                 arc = f'{DIST}-{VERSION}/' + str(f.relative_to(ROOT)).replace(os.sep, '/')
                 tar.add(f, arcname=arc, recursive=False)
+        metadata = _metadata().encode('utf-8')
+        info = tarfile.TarInfo(f'{DIST}-{VERSION}/PKG-INFO')
+        info.size = len(metadata)
+        info.mode = 0o644
+        tar.addfile(info, io.BytesIO(metadata))
     return name

@@ -7,15 +7,32 @@ backend-path = ["."]
 name = "scrollweave"
 version = "0.9.0"
 description = "Rust-core, zero third-party dependency Python screenshot stitching library"
+readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [{name = "ScrollWeave contributors"}]
+keywords = ["screenshot", "stitching", "scrolling", "rust", "computer-vision"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Rust",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://github.com/xtr-hub/scrollweave"
+Repository = "https://github.com/xtr-hub/scrollweave"
+Documentation = "https://github.com/xtr-hub/scrollweave/blob/main/docs/ARCHITECTURE.md"
 
 [project.scripts]
 scrollweave = "scrollweave.__main__:main"
 
 [project.optional-dependencies]
-dev = ["ruff>=0.15", "mypy>=1.10"]
+dev = ["ruff>=0.15", "mypy>=1.10", "build>=1.2", "twine>=5"]
 
 [tool.ruff]
 target-version = "py310"
