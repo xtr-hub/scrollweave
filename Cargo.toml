@@ -1,0 +1,33 @@
+[package]
+name = "scrollweave"
+version = "0.9.0"
+edition = "2021"
+rust-version = "1.73"
+description = "Dependency-free Rust engine for scroll screenshot reconstruction and basic image composition"
+license = "MIT"
+readme = "README.md"
+documentation = "https://docs.rs/scrollweave"
+include = [
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/LICENSE",
+    "/README.md",
+    "/docs/ARCHITECTURE.md",
+    "/docs/PORT_STATUS.md",
+    "/docs/RELEASE_STATUS.md",
+    "src/**/*.rs",
+    "tests/**/*.rs",
+    "examples/*.rs",
+    "fixtures/*.png",
+]
+
+[lib]
+name = "scrollweave"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[workspace]
+members = ["crates/scrollweave-ffi", "crates/scrollweave-cli"]
+resolver = "2"
+
+[dependencies]

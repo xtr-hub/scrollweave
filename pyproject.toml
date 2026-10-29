@@ -1,0 +1,39 @@
+[build-system]
+requires = []
+build-backend = "build_backend"
+backend-path = ["."]
+
+[project]
+name = "scrollweave"
+version = "0.9.0"
+description = "Rust-core, zero third-party dependency Python screenshot stitching library"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "ScrollWeave contributors"}]
+
+[project.scripts]
+scrollweave = "scrollweave.__main__:main"
+
+[project.optional-dependencies]
+dev = ["ruff>=0.15", "mypy>=1.10"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = ["research/reference", "output", "target"]
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["scrollweave"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["scrollweave", "tests/python", "tools"]
+ignore_missing_imports = true
+warn_unused_ignores = true

@@ -1,0 +1,52 @@
+"""ScrollWeave: zero third-party dependencies Python API + Rust native core."""
+
+from ._binding import NativeUnavailable
+from .api import (
+    AlignOptions,
+    BasicResult,
+    Diagnostics,
+    Evidence,
+    GeometryMode,
+    Goal,
+    GraphStats,
+    Image,
+    LayeredOptions,
+    LayeredResult,
+    PlanOptions,
+    PriorMasks,
+    Segmentation,
+    Viewport,
+    ViewSuggestion,
+    compose,
+    plan_views,
+    read_image,
+    stitch_basic,
+    stitch_layered,
+    write_image,
+)
+
+__version__ = '0.9.0'
+__all__ = [
+    'AlignOptions',
+    'BasicResult',
+    'Diagnostics',
+    'Evidence',
+    'GeometryMode',
+    'Goal',
+    'GraphStats',
+    'Image',
+    'LayeredOptions',
+    'LayeredResult',
+    'PlanOptions',
+    'PriorMasks',
+    'Segmentation',
+    'ViewSuggestion',
+    'Viewport',
+    'compose',
+    'plan_views',
+    'read_image',
+    'stitch_basic',
+    'stitch_layered',
+    'write_image',
+    'NativeUnavailable',
+]

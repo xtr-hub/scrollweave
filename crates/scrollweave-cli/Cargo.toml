@@ -1,0 +1,15 @@
+[package]
+name = "scrollweave-cli"
+version = "0.9.0"
+edition = "2021"
+rust-version = "1.73"
+description = "Command-line interface for the ScrollWeave Rust engine"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "scrollweave"
+path = "src/main.rs"
+
+[dependencies]
+scrollweave = { path = "../.." }

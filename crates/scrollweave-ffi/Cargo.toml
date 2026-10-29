@@ -1,0 +1,15 @@
+[package]
+name = "scrollweave-ffi"
+version = "0.9.0"
+edition = "2021"
+rust-version = "1.73"
+description = "C ABI cdylib for the ScrollWeave Python bindings"
+license = "MIT"
+publish = false
+
+[lib]
+name = "scrollweave_ffi"
+crate-type = ["cdylib"]
+
+[dependencies]
+scrollweave-core = { package = "scrollweave", path = "../.." }

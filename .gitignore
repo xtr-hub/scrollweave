@@ -1,0 +1,11 @@
+/target/
+/output/
+/dist/
+*.whl
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+*.rs.bk
+.DS_Store
