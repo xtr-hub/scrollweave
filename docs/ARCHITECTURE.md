@@ -45,9 +45,13 @@ tools/                       smoke test and benchmark tools
    update node positions via weighted median votes.
 5. Compare each aligned frame in *screen space* and *document space* to identify
    persistent UI that is inconsistent with document motion.
-6. At each document coordinate, compare available original RGB observations;
+6. When no explicit viewport is supplied, infer a rectangular content region from
+   screen-stationary full-width horizontal and full-height vertical edges. Crop
+   fixed headers/sidebars before layered reconstruction; skip cropping when no
+   persistent chrome is found.
+7. At each document coordinate, compare available original RGB observations;
    prefer different-screen-origin agreement and penalize probable UI pixels.
-7. Save original RGB pixels, not a filtered image, along with provenance, coverage,
+8. Save original RGB pixels, not a filtered image, along with provenance, coverage,
    and uncertainty diagnostics.
 
 ## Research gaps / what is NOT claimed
@@ -84,14 +88,15 @@ tools/                       smoke test and benchmark tools
 
 `pip install .` uses `build_backend.py`, a standard-library-only PEP 517 backend, to run `cargo build --release --lib -p scrollweave-ffi`. The resulting `libscrollweave_ffi.so` / `.dylib` / `scrollweave_ffi.dll` is included inside a platform-specific `py3-none-<platform>` wheel. No published binary wheel is present in this source-only distribution.
 
-At runtime: `scrollweave.api` (`Image`, option dataclasses, `BasicResult`/`LayeredResult`) → `scrollweave._binding` (`ctypes`) → `crates/scrollweave-ffi/src/lib.rs` (C ABI version 4, with the legacy basic symbols retained) → the core Rust codec/stitch/layered/planner modules. The Python layer owns bytes passed to the call; Rust clones them into engine-owned buffers. Result allocations are made by Rust and always freed with the matching `sw_*_free_*` function after `ctypes.string_at` copies the data to Python. The ABI is not a CPython extension ABI; it is a Rust `cdylib` loaded through the standard-library `ctypes` bridge.
+At runtime: `scrollweave.api` (`Image`, option dataclasses, `BasicResult`/`LayeredResult`) → `scrollweave._binding` (`ctypes`) → `crates/scrollweave-ffi/src/lib.rs` (C ABI version 5, with the legacy basic symbols retained) → the core Rust codec/stitch/layered/planner modules. The Python layer owns bytes passed to the call; Rust clones them into engine-owned buffers. Result allocations are made by Rust and always freed with the matching `sw_*_free_*` function after `ctypes.string_at` copies the data to Python. The ABI is not a CPython extension ABI; it is a Rust `cdylib` loaded through the standard-library `ctypes` bridge.
 
-The v4 protocol exposes layered reconstruction and returns image, coverage,
-confidence, provenance, screen mask, document-space evidence arrays, screen-space UI
-masks, source IDs, the content viewport, geometry mode, and an opaque planning handle.
-`plan_views()` reuses that handle, so planning does not reconstruct the page again.
-Python validates arguments and copies results; it does not perform alignment,
-segmentation, filtering, compositing, image encoding or reconstruction.
+The v5 protocol exposes layered reconstruction with an optional rectangular content
+region, and returns image, coverage, confidence, provenance, screen mask,
+document-space evidence arrays, screen-space UI masks, source IDs, the content
+viewport, geometry mode, and an opaque planning handle. `plan_views()` reuses that
+handle, so planning does not reconstruct the page again. Python validates arguments
+and copies results; it does not perform alignment, segmentation, filtering,
+compositing, image encoding or reconstruction.
 
 ## Library-interface conformance
 

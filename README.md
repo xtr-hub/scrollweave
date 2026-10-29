@@ -2,20 +2,27 @@
 
 A **Python library** with a **Rust-only algorithmic core**. Import with `import scrollweave`. Both Cargo dependencies and Python runtime dependencies are empty. Native build requires `rustc`/`cargo` and a working linker; Python 3.10+.
 
-> **Verification status (2026-10-29, Windows, Rust 1.93.1, Python 3.12.7)**: `cargo test --workspace --all-targets` passes (31 tests), `python -m unittest discover -s tests/python` passes (23 tests), `pip install .` builds and loads the native wheel, `tools/smoke_test.py` passes against both the source tree and the installed wheel, and `fixtures/shot_01..03.png` reconstruct `fixtures/expected_long.png` byte-exactly with positions `0,90,180` (MAE 0, height difference 0). The 15-frame regression suite also runs: truth 512x3306, output 512x3307, missing 0; MAE 0.1267 / exact 99.819% with masks and MAE 0.1822 / exact 99.728% without masks. Byte-exact parity with the research Python prototype, 30/UI/Japanese suites and other platforms remain unverified. Treat this as a tested source release for the shipped and 15-frame fixtures, not a production-certified binary.
+> **Verification status (2026-10-30, Windows, Rust 1.93.1, Python 3.12.7)**: `cargo test --workspace --all-targets` passes (31 tests), `python -m unittest discover -s tests/python` passes (25 tests), `pip install .` builds and loads the native wheel, `tools/smoke_test.py` passes against both the source tree and the installed wheel, and `fixtures/shot_01..03.png` reconstruct `fixtures/expected_long.png` byte-exactly with positions `0,90,180` (MAE 0, height difference 0). The 15-frame regression suite also runs: truth 512x3306, output 512x3307, missing 0; MAE 0.1267 / exact 99.819% with masks and MAE 0.1822 / exact 99.728% without masks. A separate six-scenario headless-browser regression (fixed headers/sidebars, 2-3 scrolling frames) auto-detected the content region and produced clean content with MAE 0.01-0.03 after page padding. Byte-exact parity with the research Python prototype, 30/UI/Japanese suites and other platforms remain unverified. Treat this as a tested release for the shipped and 15-frame fixtures, not a production-certified binary.
 
-## Install
+## Quick start
 
 ```shell
-# Install Rust once on your machine; install from the unzipped source directory.
-python -m pip install .
+python -m pip install scrollweave
 python -c "import scrollweave; print(scrollweave.__version__)"
-# Validate the native algorithms:
+```
+
+The PyPI wheel bundles the platform-specific native dynamic library, so there is no
+`pip install numpy pillow scipy ...` step. When no wheel exists for your platform,
+`pip` builds the source distribution locally and therefore needs Rust/Cargo and a
+working linker.
+
+From a checkout, install and validate the native algorithms with:
+
+```shell
+python -m pip install .
 cargo test --workspace
 python -m unittest discover -s tests/python -v
 ```
-
-The built wheel bundles the platform-specific native dynamic library. No `pip install numpy pillow scipy ...` necessary. Prebuilt wheels **are not included**; `pip install .` builds locally with Cargo.
 
 ## Main Python API
 
@@ -39,6 +46,12 @@ r.save('merged.png')
 r.save_debug('diagnostics')
 print(r.scroll, r.viewport, r.geometry_mode)
 print(r.support_fraction, r.unverified_fraction)
+
+# Omit viewport when the screenshots contain a fixed web header/sidebar.
+# The native planner detects persistent full-width/full-height chrome and crops
+# it before reconstruction:
+auto = stitch_layered(['001.png', '002.png', '003.png'], scroll=[0, 195, 390])
+auto.save('merged_content.png')
 
 # Planning is a separate domain operation.
 repair = plan_views(r, PlanOptions(count=3, goal=Goal.REPAIR))
@@ -69,6 +82,11 @@ compose(['001.png', '002.png'], layout='vertical').save('vertical.png')
 # In-memory RGB frames (only Python built-ins, no Pillow / NumPy)
 frame = Image(width=32, height=32, rgb=b'\xff\x00\x00' * (32 * 32))
 ```
+
+`Viewport(top=..., bottom=..., left=..., right=...)` uses source-frame coordinates;
+`bottom` and `right` are exclusive. Passing a viewport disables automatic fixed-chrome
+detection and uses exactly the supplied band/region. Omitting it lets the native
+layer detect a persistent header/sidebar and infer the scroll viewport automatically.
 
 ## Result model
 
@@ -108,10 +126,10 @@ cdylib is named `scrollweave_ffi`. The Python console command is also `scrollwea
 | `align.rs`, `graph.rs` | Image-derived integer scroll offsets, overlap graph, robust pose optimization |
 | `geometry.rs` | Persistent screen-border detection + activity-envelope fallback |
 | `evidence.rs` | Independent position support, conflict and unverified maps; duplicate-view disambiguation |
-| `layered.rs` | Document/screen evidence, transient candidates, morphology, appearance histogram, side rails, prior calibration, original pixel source selection |
+| `layered.rs` | Automatic fixed-header/sidebar content-region detection, rectangular frame cropping, document/screen evidence, transient candidates, morphology, appearance histogram, side rails, prior calibration, original pixel source selection |
 | `graphcut.rs` | Optional binary grid Potts mincut via pure Rust Dinic (experimental) |
 | `planner.rs` | Verification suggestions and expected repair suggestions |
-| `crates/scrollweave-ffi/src/lib.rs` | C ABI v4 to Python; buffers allocated and freed in Rust |
+| `crates/scrollweave-ffi/src/lib.rs` | C ABI v5 to Python; buffers allocated and freed in Rust |
 | `codec.rs` | PNG (8-bit, non-interlaced), BMP24, PPM P6; raw RGB via C ABI |
 
 ### Important scope and mathematical limits
