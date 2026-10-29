@@ -30,8 +30,16 @@ The public API has one function per domain: reconstruction, planning and layout.
 
 ```python
 from scrollweave import (
-    Goal, Image, LayeredOptions, PlanOptions, PriorMasks, Viewport,
-    compose, plan_views, stitch_basic, stitch_layered,
+    Goal,
+    Image,
+    LayeredOptions,
+    PlanOptions,
+    PriorMasks,
+    Viewport,
+    compose,
+    plan_views,
+    stitch_basic,
+    stitch_layered,
 )
 
 # Layered reconstruction requires vertical scroll positions.
@@ -66,7 +74,8 @@ basic = stitch_basic(
 
 # Prior masks are validated domain objects, not bare N*H*W bytes.
 masks = PriorMasks(
-    width=760, height=512,
+    width=760,
+    height=512,
     frames=(bytes(760 * 512),) * 3,
 )
 layered = stitch_layered(
