@@ -5,10 +5,15 @@ from pathlib import Path
 from scrollweave import (
     AlignOptions,
     Image,
+    ImageFormatError,
+    ImageIOError,
+    InvalidArgumentError,
     LayeredOptions,
+    NativeError,
     NativeUnavailable,
     PlanOptions,
     PriorMasks,
+    UnsupportedFormatError,
     Viewport,
     compose,
     stitch_basic,
@@ -67,6 +72,43 @@ class PythonInterfaceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             compose([image], gap=-1)
 
+    def test_exception_hierarchy_and_context(self):
+        self.assertTrue(issubclass(InvalidArgumentError, ValueError))
+        self.assertTrue(issubclass(ImageIOError, OSError))
+        self.assertTrue(issubclass(UnsupportedFormatError, ValueError))
+        self.assertTrue(issubclass(ImageFormatError, ValueError))
+        self.assertTrue(issubclass(NativeError, RuntimeError))
+        image = Image(1, 1, b'abc')
+        with self.assertRaises(InvalidArgumentError) as caught:
+            stitch_layered([image], scroll=[0], viewport=Viewport(0, 2))
+        message = str(caught.exception)
+        self.assertIn('viewport bottom 2', message)
+        self.assertIn('frame height 1', message)
+
+    def test_auto_scroll_positions(self):
+        width, height, frame_height = 100, 240, 120
+        page = Image(
+            width,
+            height,
+            bytes(
+                (x * 17 + y * 29 + ch * 41 + (x * y) % 67) % 256
+                for y in range(height)
+                for x in range(width)
+                for ch in range(3)
+            ),
+        )
+        frames = [
+            Image(
+                width,
+                frame_height,
+                page.rgb[offset * width * 3 : (offset + frame_height) * width * 3],
+            )
+            for offset in (0, frame_height // 2, frame_height)
+        ]
+        result = stitch_layered(frames)
+        self.assertEqual((result.image.width, result.image.height), (width, height))
+        self.assertEqual(result.image.rgb, page.rgb)
+
 
 @unittest.skipUnless(HAS_NATIVE, 'Rust cdylib not built in this environment')
 class ActualRustIntegrationTests(unittest.TestCase):
@@ -111,6 +153,38 @@ class ActualRustIntegrationTests(unittest.TestCase):
     def test_decode_shipped_png(self):
         image = Image.open(ROOT / 'fixtures' / 'compressed_rgb.png')
         self.assertEqual((image.width, image.height), (97, 81))
+
+    def test_image_file_errors_are_contextual(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            missing = root / 'missing.png'
+            with self.assertRaises(ImageIOError) as caught:
+                Image.open(missing)
+            message = str(caught.exception)
+            self.assertIn(str(missing), message)
+            self.assertIn('not found', message.lower())
+
+            unsupported = root / 'notes.txt'
+            unsupported.write_text('not an image', encoding='utf-8')
+            with self.assertRaises(UnsupportedFormatError) as caught:
+                Image.open(unsupported)
+            self.assertIn(str(unsupported), str(caught.exception))
+
+            corrupt = root / 'corrupt.png'
+            corrupt.write_bytes(b'\x89PNG\r\n\x1a\n' + b'bad')
+            with self.assertRaises(ImageFormatError) as caught:
+                Image.open(corrupt)
+            self.assertIn(str(corrupt), str(caught.exception))
+
+            image = Image(2, 2, b'\x00\x00\x00' * 4)
+            with self.assertRaises(UnsupportedFormatError) as caught:
+                image.save(root / 'frame.webp')
+            self.assertIn('frame.webp', str(caught.exception))
+            self.assertIn('.png', str(caught.exception))
+
+            with self.assertRaises(ImageIOError) as caught:
+                image.save(root / 'missing-dir' / 'frame.png')
+            self.assertIn('missing-dir', str(caught.exception))
 
 
 if __name__ == '__main__':

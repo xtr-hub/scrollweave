@@ -1,6 +1,5 @@
 """ScrollWeave: zero third-party dependencies Python API + Rust native core."""
 
-from ._binding import NativeUnavailable
 from .api import (
     AlignOptions,
     BasicResult,
@@ -24,8 +23,21 @@ from .api import (
     stitch_layered,
     write_image,
 )
+from .errors import (
+    ImageError,
+    ImageFormatError,
+    ImageIOError,
+    InternalError,
+    InvalidArgumentError,
+    LimitError,
+    NativeError,
+    NativeUnavailable,
+    ScrollWeaveError,
+    UnsupportedError,
+    UnsupportedFormatError,
+)
 
-__version__ = '0.9.2'
+__version__ = '0.9.3'
 __all__ = [
     'AlignOptions',
     'BasicResult',
@@ -35,11 +47,22 @@ __all__ = [
     'Goal',
     'GraphStats',
     'Image',
+    'ImageError',
+    'ImageFormatError',
+    'ImageIOError',
+    'InternalError',
+    'InvalidArgumentError',
     'LayeredOptions',
     'LayeredResult',
+    'LimitError',
+    'NativeError',
+    'NativeUnavailable',
     'PlanOptions',
     'PriorMasks',
+    'ScrollWeaveError',
     'Segmentation',
+    'UnsupportedError',
+    'UnsupportedFormatError',
     'ViewSuggestion',
     'Viewport',
     'compose',
@@ -48,5 +71,4 @@ __all__ = [
     'stitch_basic',
     'stitch_layered',
     'write_image',
-    'NativeUnavailable',
 ]

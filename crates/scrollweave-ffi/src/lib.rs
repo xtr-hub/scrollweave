@@ -1,6 +1,6 @@
 //! Stable C ABI for the stdlib-only Python ctypes client.
 //! All heap allocations crossing the boundary are owned and freed by Rust.
-use scrollweave_core::image::{SwError, SwResult};
+use scrollweave_core::image::{ErrorKind, SwError, SwResult};
 use scrollweave_core::{
     compose, read_image, stitch_basic, write_image, BasicOptions, ComposeOptions, Image, Layout,
 };
@@ -106,11 +106,11 @@ unsafe fn free_owned(im: &mut SwRgbOwned) {
 }
 fn panic_to_error(panic: Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = panic.downcast_ref::<&str>() {
-        format!("Rust panic: {s}")
+        format!("internal:Rust panic: {s}")
     } else if let Some(s) = panic.downcast_ref::<String>() {
-        format!("Rust panic: {s}")
+        format!("internal:Rust panic: {s}")
     } else {
-        "Rust panic inside ScrollWeave".into()
+        "internal:Rust panic inside ScrollWeave".into()
     }
 }
 unsafe fn write_error(buffer: *mut c_char, cap: usize, msg: &str) {
@@ -122,6 +122,16 @@ unsafe fn write_error(buffer: *mut c_char, cap: usize, msg: &str) {
     ptr::copy_nonoverlapping(b.as_ptr(), buffer.cast::<u8>(), count);
     *buffer.add(count) = 0;
 }
+fn kind_name(kind: ErrorKind) -> &'static str {
+    match kind {
+        ErrorKind::Input => "input",
+        ErrorKind::Unsupported => "unsupported",
+        ErrorKind::Limit => "limit",
+        ErrorKind::Io => "io",
+        ErrorKind::Internal => "internal",
+        ErrorKind::Other => "other",
+    }
+}
 fn run<F>(buf: *mut c_char, cap: usize, f: F) -> i32
 where
     F: FnOnce() -> SwResult<()>,
@@ -129,7 +139,7 @@ where
     let result = catch_unwind(AssertUnwindSafe(f));
     let problem = match result {
         Ok(Ok(())) => return 0,
-        Ok(Err(e)) => e.to_string(),
+        Ok(Err(e)) => format!("{}:{}", kind_name(e.kind), e.message),
         Err(panic) => panic_to_error(panic),
     };
     unsafe { write_error(buf, cap, &problem) };

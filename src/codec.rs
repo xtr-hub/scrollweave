@@ -547,9 +547,25 @@ fn encode_bmp(img: &Image) -> Vec<u8> {
     }
     buf
 }
+fn io_failure(action: &str, path: &Path, error: std::io::Error) -> SwError {
+    let reason = match error.kind() {
+        std::io::ErrorKind::NotFound => "file or directory not found".to_string(),
+        std::io::ErrorKind::PermissionDenied => "permission denied".to_string(),
+        std::io::ErrorKind::AlreadyExists => "already exists".to_string(),
+        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => {
+            "invalid path or file name".to_string()
+        }
+        _ => error.to_string(),
+    };
+    SwError::new(
+        ErrorKind::Io,
+        format!("{action} '{}': {reason}", path.display()),
+    )
+}
 pub fn read_image(path: impl AsRef<Path>) -> SwResult<Image> {
-    let bytes = fs::read(path)?;
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+    let path = path.as_ref();
+    let bytes = fs::read(path).map_err(|error| io_failure("cannot read image", path, error))?;
+    let decoded = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         decode_png(&bytes)
     } else if bytes.starts_with(b"P6") {
         decode_ppm(&bytes)
@@ -560,7 +576,17 @@ pub fn read_image(path: impl AsRef<Path>) -> SwResult<Image> {
             ErrorKind::Unsupported,
             "unsupported image format; use PNG/BMP/PPM or decoded raw RGB",
         )
-    }
+    };
+    decoded.map_err(|error| {
+        SwError::new(
+            error.kind,
+            format!(
+                "cannot decode image '{}': {}",
+                path.display(),
+                error.message
+            ),
+        )
+    })
 }
 pub fn write_image(path: impl AsRef<Path>, img: &Image) -> SwResult<()> {
     let path = path.as_ref();
@@ -580,7 +606,7 @@ pub fn write_image(path: impl AsRef<Path>, img: &Image) -> SwResult<()> {
             )
         }
     };
-    Ok(fs::write(path, b)?)
+    fs::write(path, b).map_err(|error| io_failure("cannot write image", path, error))
 }
 #[cfg(test)]
 mod tests {
@@ -598,5 +624,20 @@ mod tests {
         let a = Image::solid(11, 9, [22, 155, 9]).unwrap();
         assert_eq!(a, decode_ppm(&encode_ppm(&a)).unwrap());
         assert_eq!(a, decode_bmp(&encode_bmp(&a)).unwrap())
+    }
+    #[test]
+    fn missing_image_reports_path_and_io_kind() {
+        let path = "definitely-missing-scrollweave-image.png";
+        let error = read_image(path).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Io);
+        assert!(error.message.contains(path), "{}", error.message);
+        assert!(error.message.contains("not found"), "{}", error.message);
+    }
+    #[test]
+    fn unsupported_output_extension_is_reported() {
+        let image = Image::solid(2, 2, [0, 0, 0]).unwrap();
+        let error = write_image("frame.webp", &image).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Unsupported);
+        assert!(error.message.contains("png, ppm or bmp"));
     }
 }

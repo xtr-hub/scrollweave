@@ -4,14 +4,24 @@ from __future__ import annotations
 
 import ctypes as c
 import os
+import re
 import sys
 import threading
 from contextlib import suppress
 from pathlib import Path
 
-
-class NativeUnavailable(RuntimeError):
-    """The zero-dependency Rust shared library has not been built or installed."""
+from .errors import (
+    ImageFormatError,
+    ImageIOError,
+    InternalError,
+    InvalidArgumentError,
+    LimitError,
+    NativeError,
+    NativeUnavailable,
+    ScrollWeaveError,
+    UnsupportedError,
+    UnsupportedFormatError,
+)
 
 
 class _Ref(c.Structure):
@@ -97,22 +107,33 @@ def _load():
         )
         for location in candidates:
             if location.is_file():
-                lib = c.CDLL(str(location))
-                _configure(lib)
+                try:
+                    lib = c.CDLL(str(location))
+                    _configure(lib)
+                except (OSError, AttributeError) as exc:
+                    raise NativeUnavailable(
+                        f'failed to load ScrollWeave native library {str(location)!r}: {exc}'
+                    ) from exc
                 _DLL = lib
                 return lib
     raise NativeUnavailable(
-        'Rust core is not compiled. Run `pip install .` (Rust/Cargo required) '
-        'or `cargo build --release --lib` in the project directory. '
-        'Expected ' + _library_name()
+        'Rust core is not compiled or installed. Expected native library '
+        f'{_library_name()!r}; install with `pip install scrollweave` or build with '
+        '`cargo build --release --lib -p scrollweave-ffi`. '
+        f'Searched: {", ".join(str(path) for path in candidates)}'
     )
 
 
 def _configure(lib):
     err = [c.c_void_p, c.c_size_t]
     lib.sw_api_version.restype = c.c_uint32
-    if lib.sw_api_version() != 5:
-        raise NativeUnavailable('ScrollWeave Rust ABI version mismatch (v5 required)')
+    version = lib.sw_api_version()
+    if version != 5:
+        raise NativeUnavailable(
+            f'ScrollWeave native ABI mismatch: library reports v{version}, '
+            'but this Python package requires v5. Reinstall scrollweave so the '
+            'Python files and native library come from the same release.'
+        )
     lib.sw_read_image.argtypes = [c.c_char_p, c.POINTER(_Owned), *err]
     lib.sw_read_image.restype = c.c_int32
     lib.sw_write_image.argtypes = [c.POINTER(_Ref), c.c_char_p, *err]
@@ -167,9 +188,44 @@ def _configure(lib):
     lib.sw_layered_free_views.restype = None
 
 
-def _check(status, error):
-    if status != 0:
-        raise RuntimeError(error.value.decode('utf-8', errors='replace') or 'Rust core failed')
+def _check(status, error, operation=None):
+    if status == 0:
+        return
+    raw = error.value.decode('utf-8', errors='replace').strip()
+    kind, separator, detail = raw.partition(':')
+    prefix = f'{operation} failed: ' if operation else ''
+    if separator and kind in {
+        'input',
+        'unsupported',
+        'limit',
+        'io',
+        'internal',
+        'other',
+    }:
+        text = detail.strip() or 'no detail provided'
+        exception = {
+            'input': InvalidArgumentError,
+            'unsupported': UnsupportedError,
+            'limit': LimitError,
+            'io': ImageIOError,
+            'internal': InternalError,
+            'other': NativeError,
+        }[kind]
+        raise exception(f'{prefix}{text}') from None
+    raise NativeError(f'{prefix}{raw or "unknown native error"}')
+
+
+def _display_path(value):
+    text = os.fspath(value)
+    return os.fsdecode(text) if isinstance(text, bytes) else text
+
+
+def _image_error_reason(message):
+    text = str(message)
+    for prefix in ('read image failed: ', 'save image failed: '):
+        text = text.removeprefix(prefix)
+    text = re.sub(r'^cannot (?:read|decode|write) image .*?: ', '', text)
+    return text
 
 
 def _path(value):
@@ -189,7 +245,7 @@ def _copy_owned(im):
 
 def _refs(images):
     if not (1 <= len(images) <= 128):
-        raise ValueError('Expected 1..128 input images')
+        raise InvalidArgumentError('Expected 1..128 input images')
     slots = (_Ref * len(images))()
     pinned = []
     for k, image in enumerate(images):
@@ -206,7 +262,26 @@ def read_image(path):
     lib = _load()
     out = _Owned()
     err = c.create_string_buffer(4096)
-    _check(lib.sw_read_image(_path(path), c.byref(out), err, len(err)), err)
+    display = _display_path(path)
+    try:
+        _check(
+            lib.sw_read_image(_path(path), c.byref(out), err, len(err)),
+            err,
+        )
+    except UnsupportedError as exc:
+        raise UnsupportedFormatError(
+            f"cannot decode image '{display}': {_image_error_reason(exc)}"
+        ) from exc
+    except InvalidArgumentError as exc:
+        raise ImageFormatError(
+            f"cannot decode image '{display}': {_image_error_reason(exc)}"
+        ) from exc
+    except LimitError as exc:
+        raise LimitError(f"cannot decode image '{display}': {_image_error_reason(exc)}") from exc
+    except ImageIOError as exc:
+        raise ImageIOError(f"cannot open image '{display}': {_image_error_reason(exc)}") from exc
+    except ScrollWeaveError:
+        raise
     try:
         return _copy_owned(out)
     finally:
@@ -217,7 +292,23 @@ def write_image(path, image):
     lib = _load()
     refs, pinned = _refs([image])
     err = c.create_string_buffer(4096)
-    _check(lib.sw_write_image(c.byref(refs[0]), _path(path), err, len(err)), err)
+    display = _display_path(path)
+    try:
+        _check(
+            lib.sw_write_image(c.byref(refs[0]), _path(path), err, len(err)),
+            err,
+        )
+    except UnsupportedError as exc:
+        raise UnsupportedFormatError(
+            f"cannot save image '{display}': {_image_error_reason(exc)}; "
+            'supported output extensions are .png, .bmp and .ppm'
+        ) from exc
+    except ImageIOError as exc:
+        raise ImageIOError(f"cannot save image '{display}': {_image_error_reason(exc)}") from exc
+    except LimitError as exc:
+        raise LimitError(f"cannot save image '{display}': {_image_error_reason(exc)}") from exc
+    except ScrollWeaveError:
+        raise
 
 
 def compose(images, layout, columns, gap, background):
@@ -230,6 +321,7 @@ def compose(images, layout, columns, gap, background):
             refs, len(images), layout, columns, gap, *background, c.byref(out), err, len(err)
         ),
         err,
+        'compose images',
     )
     try:
         return _copy_owned(out)
@@ -258,7 +350,11 @@ def stitch_basic(images, positions, viewport, options, diagnostics):
     )
     out = _Response()
     err = c.create_string_buffer(4096)
-    _check(lib.sw_stitch_rgbs(refs, len(images), c.byref(config), c.byref(out), err, len(err)), err)
+    _check(
+        lib.sw_stitch_rgbs(refs, len(images), c.byref(config), c.byref(out), err, len(err)),
+        err,
+        'basic stitching',
+    )
     try:
         from .api import BasicResult, Diagnostics, GraphStats, Viewport
 
@@ -408,11 +504,11 @@ def _layered_run(images, positions, viewport, options, diagnostics):
     if not isinstance(options, LayeredOptions):
         raise TypeError('options must be LayeredOptions')
     if not images:
-        raise ValueError('at least one frame is required')
+        raise InvalidArgumentError('at least one frame is required')
     if len(positions) != len(images):
-        raise ValueError('one vertical scroll position required per input frame')
+        raise InvalidArgumentError('one vertical scroll position required per input frame')
     if len({(image.width, image.height) for image in images}) != 1:
-        raise ValueError('all frames must share dimensions')
+        raise InvalidArgumentError('all frames must share dimensions')
     n = len(images)
     width, height = images[0].width, images[0].height
     poses = (c.c_int32 * n)(*[int(x) for x in positions])
@@ -424,7 +520,7 @@ def _layered_run(images, positions, viewport, options, diagnostics):
             return _MaskRef(None, 0)
         raw = value.raw()
         if len(raw) != n * width * height:
-            raise ValueError('UI prior mask must contain N * H * W bytes')
+            raise InvalidArgumentError('UI prior mask must contain N * H * W bytes')
         buffer = (c.c_uint8 * len(raw)).from_buffer_copy(raw)
         buf_pins.append(buffer)
         return _MaskRef(c.cast(buffer, c.POINTER(c.c_uint8)), len(raw))
@@ -437,7 +533,7 @@ def _layered_run(images, positions, viewport, options, diagnostics):
     if options.training_indices is not None:
         training_values = [int(value) for value in options.training_indices]
         if not training_values or any(value < 0 or value >= n for value in training_values):
-            raise ValueError('training_indices must select existing frames')
+            raise InvalidArgumentError('training_indices must select existing frames')
         train = (c.c_uint32 * len(training_values))(*training_values)
 
     top, bottom = (-1, -1) if viewport is None else viewport.pair()
@@ -467,6 +563,7 @@ def _layered_run(images, positions, viewport, options, diagnostics):
             refs, n, c.byref(config), c.byref(response), error, len(error)
         ),
         error,
+        'layered reconstruction',
     )
     try:
         from array import array
@@ -558,7 +655,7 @@ def plan_layered(result, plan_options):
         raise TypeError('plan_options must be PlanOptions')
     handle = result._native
     if handle is None or not getattr(handle, 'ptr', None):
-        raise ValueError('layered result does not carry a native planning handle')
+        raise InvalidArgumentError('layered result does not carry a native planning handle')
     lib = handle._lib
     values = (
         [] if plan_options.candidates is None else [int(value) for value in plan_options.candidates]
@@ -576,7 +673,9 @@ def plan_layered(result, plan_options):
     views = _Views()
     error = c.create_string_buffer(4096)
     _check(
-        lib.sw_layered_plan(handle.ptr, c.byref(config), c.byref(views), error, len(error)), error
+        lib.sw_layered_plan(handle.ptr, c.byref(config), c.byref(views), error, len(error)),
+        error,
+        'view planning',
     )
     try:
         return tuple(

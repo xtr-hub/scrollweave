@@ -4,7 +4,7 @@ import io
 import tempfile
 import unittest
 from array import array
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from scrollweave import (
@@ -15,6 +15,7 @@ from scrollweave import (
     NativeUnavailable,
     PlanOptions,
     PriorMasks,
+    UnsupportedFormatError,
     Viewport,
     plan_views,
     stitch_layered,
@@ -296,7 +297,7 @@ class NativeCodecAndCliTests(unittest.TestCase):
                 path = root / f'frame{suffix}'
                 image.save(path)
                 self.assertEqual(Image.open(path), image)
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(UnsupportedFormatError):
                 image.save(root / 'frame.jpg')
 
     def test_cli_stitch_and_compose(self):
@@ -349,6 +350,46 @@ class NativeCodecAndCliTests(unittest.TestCase):
                 )
             image = Image.open(combined)
             self.assertEqual((image.width, image.height), (page.width, 82))
+
+    def test_cli_auto_positions_and_clean_error(self):
+        from scrollweave.__main__ import main
+
+        width, height, frame_height = 100, 240, 120
+        page = Image(
+            width,
+            height,
+            bytes(
+                (x * 17 + y * 29 + ch * 41 + (x * y) % 67) % 256
+                for y in range(height)
+                for x in range(width)
+                for ch in range(3)
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            files = []
+            for index, offset in enumerate((0, 60, 120)):
+                frame = Image(
+                    width,
+                    frame_height,
+                    page.rgb[offset * width * 3 : (offset + frame_height) * width * 3],
+                )
+                path = root / f'auto_{index}.png'
+                frame.save(path)
+                files.append(str(path))
+            output = root / 'auto.png'
+            with redirect_stdout(io.StringIO()):
+                main(['stitch', *files, '-o', str(output), '--no-appearance'])
+            self.assertEqual(Image.open(output).rgb, page.rgb)
+
+            stderr = io.StringIO()
+            with self.assertRaises(SystemExit) as caught, redirect_stderr(stderr):
+                main(['stitch', str(root / 'missing.png'), '-o', str(output)])
+            self.assertEqual(caught.exception.code, 2)
+            message = stderr.getvalue()
+            self.assertIn('cannot open image', message)
+            self.assertIn('missing.png', message)
+            self.assertNotIn('Traceback', message)
 
 
 if __name__ == '__main__':

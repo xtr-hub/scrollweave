@@ -1,12 +1,14 @@
 """python -m scrollweave stitch/compose ..."""
 
 import argparse
+import sys
 
 from . import (
     AlignOptions,
     Image,
     LayeredOptions,
     PlanOptions,
+    ScrollWeaveError,
     Segmentation,
     Viewport,
     __version__,
@@ -17,7 +19,7 @@ from . import (
 )
 
 
-def main(argv=None):
+def _main(argv=None):
     parser = argparse.ArgumentParser(prog='scrollweave')
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
     sub = parser.add_subparsers(dest='operation', required=True)
@@ -26,7 +28,7 @@ def main(argv=None):
     st.add_argument('images', nargs='+')
     st.add_argument('-o', '--output', required=True)
     st.add_argument('--algorithm', choices=('layered', 'basic'), default='layered')
-    st.add_argument('--positions', help='comma-separated vertical scroll positions')
+    st.add_argument('--positions', help='comma-separated scroll positions; omit to estimate')
     st.add_argument('--viewport', help='top:bottom content band')
     st.add_argument('--no-trim', action='store_true')
     st.add_argument('--no-appearance', action='store_true')
@@ -61,8 +63,6 @@ def main(argv=None):
     positions = [int(value) for value in args.positions.split(',')] if args.positions else None
 
     if args.algorithm == 'basic':
-        if positions is None:
-            raise SystemExit('stitch --algorithm basic requires --positions')
         result = stitch_basic(
             frames,
             positions=positions,
@@ -72,8 +72,6 @@ def main(argv=None):
         )
         placed = len([position for position in result.positions if position is not None])
     else:
-        if positions is None:
-            raise SystemExit('stitch requires --positions for layered reconstruction')
         if viewport is None and args.no_trim:
             viewport = Viewport(0, frames[0].height)
         options = LayeredOptions(
@@ -122,6 +120,14 @@ def main(argv=None):
         f'Saved {args.output}: {result.image.width}x{result.image.height}, '
         f'{placed}/{len(frames)} frames placed'
     )
+
+
+def main(argv=None):
+    try:
+        return _main(argv)
+    except ScrollWeaveError as error:
+        print(f'scrollweave: {error}', file=sys.stderr)
+        raise SystemExit(2) from None
 
 
 if __name__ == '__main__':

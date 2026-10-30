@@ -19,6 +19,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from .errors import (
+    ImageIOError,
+    InvalidArgumentError,
+    ScrollWeaveError,
+)
+
 
 class GeometryMode(str, Enum):
     INSUFFICIENT_MOTION = 'insufficient_motion'
@@ -46,13 +52,13 @@ class Image:
 
     def __post_init__(self):
         if self.width <= 0 or self.height <= 0:
-            raise ValueError('image dimensions must be positive')
+            raise InvalidArgumentError('image dimensions must be positive')
         if self.width > 2**32 - 1 or self.height > 2**32 - 1:
-            raise ValueError('image dimensions exceed Rust ABI range')
+            raise InvalidArgumentError('image dimensions exceed Rust ABI range')
         if not isinstance(self.rgb, bytes):
             object.__setattr__(self, 'rgb', bytes(self.rgb))
         if len(self.rgb) != self.width * self.height * 3:
-            raise ValueError('invalid RGB888 buffer length')
+            raise InvalidArgumentError('invalid RGB888 buffer length')
 
     @classmethod
     def open(cls, path: str | Path) -> Image:
@@ -80,11 +86,11 @@ class Viewport:
 
     def __post_init__(self):
         if self.top < 0 or self.bottom <= self.top:
-            raise ValueError('viewport must satisfy 0 <= top < bottom')
+            raise InvalidArgumentError('viewport must satisfy 0 <= top < bottom')
         if self.left < 0:
-            raise ValueError('viewport left must be non-negative')
+            raise InvalidArgumentError('viewport left must be non-negative')
         if self.right is not None and self.right <= self.left:
-            raise ValueError('viewport right must be greater than left')
+            raise InvalidArgumentError('viewport right must be greater than left')
 
     @property
     def height(self) -> int:
@@ -96,7 +102,7 @@ class Viewport:
     def bounds(self, width: int) -> tuple[int, int, int, int] | None:
         right = width if self.right is None else self.right
         if self.left >= right or right > width:
-            raise ValueError('viewport is outside frame bounds')
+            raise InvalidArgumentError('viewport is outside frame bounds')
         if self.left == 0 and right == width:
             return None
         return self.left, self.top, right, self.bottom
@@ -112,13 +118,15 @@ class PriorMasks:
 
     def __post_init__(self):
         if self.width <= 0 or self.height <= 0:
-            raise ValueError('mask dimensions must be positive')
+            raise InvalidArgumentError('mask dimensions must be positive')
         if not self.frames:
-            raise ValueError('at least one prior mask is required')
+            raise InvalidArgumentError('at least one prior mask is required')
         expected = self.width * self.height
         for index, mask in enumerate(self.frames):
             if len(mask) != expected:
-                raise ValueError(f'prior mask {index} has {len(mask)} bytes; expected {expected}')
+                raise InvalidArgumentError(
+                    f'prior mask {index} has {len(mask)} bytes; expected {expected}'
+                )
 
     def raw(self) -> bytes:
         return b''.join(self.frames)
@@ -132,9 +140,9 @@ class AlignOptions:
 
     def __post_init__(self):
         if not 0 < self.min_overlap < 1:
-            raise ValueError('min_overlap must be in (0, 1)')
+            raise InvalidArgumentError('min_overlap must be in (0, 1)')
         if not 0 < self.min_match_score <= 1:
-            raise ValueError('min_match_score must be in (0, 1]')
+            raise InvalidArgumentError('min_match_score must be in (0, 1]')
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,15 +159,15 @@ class LayeredOptions:
 
     def __post_init__(self):
         if not 0 <= self.appearance_threshold <= 1:
-            raise ValueError('appearance_threshold must be in [0, 1]')
+            raise InvalidArgumentError('appearance_threshold must be in [0, 1]')
         if self.texture_strength < 0:
-            raise ValueError('texture_strength must be non-negative')
+            raise InvalidArgumentError('texture_strength must be non-negative')
         if not isinstance(self.segmentation, Segmentation):
             object.__setattr__(self, 'segmentation', Segmentation(self.segmentation))
         if self.training_indices is not None and (
             not self.training_indices or any(index < 0 for index in self.training_indices)
         ):
-            raise ValueError('training_indices must be non-empty and non-negative')
+            raise InvalidArgumentError('training_indices must be non-empty and non-negative')
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,13 +181,13 @@ class PlanOptions:
 
     def __post_init__(self):
         if self.count < 0:
-            raise ValueError('count must be non-negative')
+            raise InvalidArgumentError('count must be non-negative')
         if self.step <= 0:
-            raise ValueError('step must be positive')
+            raise InvalidArgumentError('step must be positive')
         if self.minimum_separation < 0:
-            raise ValueError('minimum_separation must be non-negative')
+            raise InvalidArgumentError('minimum_separation must be non-negative')
         if self.document_height is not None and self.document_height <= 0:
-            raise ValueError('document_height must be positive')
+            raise InvalidArgumentError('document_height must be positive')
         if not isinstance(self.goal, Goal):
             object.__setattr__(self, 'goal', Goal(self.goal))
 
@@ -261,51 +269,65 @@ class LayeredResult:
 
 def _save_debug(result: BasicResult | LayeredResult, directory: str | Path) -> None:
     root = Path(directory)
-    root.mkdir(parents=True, exist_ok=True)
-    if result.diagnostics is not None:
-        for name in ('coverage', 'confidence', 'provenance', 'screen_mask'):
-            image = getattr(result.diagnostics, name)
-            if image is not None:
-                image.save(root / f'{name}.png')
-    if isinstance(result, LayeredResult):
-        evidence = result.evidence
-        width, height = result.image.width, result.image.height
-        for name in ('conflict', 'unverified', 'invalid_source'):
-            values = getattr(evidence, name)
-            if len(values) != width * height:
-                continue
-            data = bytearray(width * height * 3)
-            for index, value in enumerate(values):
-                data[index * 3 : index * 3 + 3] = bytes((255 if value else 0,)) * 3
-            Image(width, height, bytes(data)).save(root / f'{name}.png')
-        (root / 'source_ids.i32le').write_bytes(evidence.source_ids.tobytes())
-    elif result.positions:
-        from array import array as _array
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        if result.diagnostics is not None:
+            for name in ('coverage', 'confidence', 'provenance', 'screen_mask'):
+                image = getattr(result.diagnostics, name)
+                if image is not None:
+                    image.save(root / f'{name}.png')
+        if isinstance(result, LayeredResult):
+            evidence = result.evidence
+            width, height = result.image.width, result.image.height
+            for name in ('conflict', 'unverified', 'invalid_source'):
+                values = getattr(evidence, name)
+                if len(values) != width * height:
+                    continue
+                data = bytearray(width * height * 3)
+                for index, value in enumerate(values):
+                    data[index * 3 : index * 3 + 3] = bytes((255 if value else 0,)) * 3
+                Image(width, height, bytes(data)).save(root / f'{name}.png')
+            (root / 'source_ids.i32le').write_bytes(evidence.source_ids.tobytes())
+        elif result.positions:
+            from array import array as _array
 
-        values = _array('i')
-        for position in result.positions:
-            values.extend(position if position is not None else (-(2**31), -(2**31)))
-        (root / 'positions.i32le').write_bytes(values.tobytes())
+            values = _array('i')
+            for position in result.positions:
+                values.extend(position if position is not None else (-(2**31), -(2**31)))
+            (root / 'positions.i32le').write_bytes(values.tobytes())
+    except ScrollWeaveError:
+        raise
+    except OSError as error:
+        raise ImageIOError(f'cannot write debug output to {str(directory)!r}: {error}') from error
 
 
 def _images(values: Sequence[str | Path | Image]) -> list[Image]:
     frames = []
-    for value in values:
+    for index, value in enumerate(values):
         if isinstance(value, Image):
             frames.append(value)
         elif isinstance(value, (str, Path)):
             frames.append(Image.open(value))
         else:
-            raise TypeError('expected Image objects or PNG/BMP/PPM file paths')
+            raise TypeError(
+                f'images[{index}] must be an Image or a PNG/BMP/PPM path, '
+                f'got {type(value).__name__}'
+            )
     return frames
 
 
-def _viewport(value: Viewport | tuple[int, int] | None, height: int) -> Viewport | None:
+def _viewport(
+    value: Viewport | tuple[int, int] | None, height: int, width: int | None = None
+) -> Viewport | None:
     if value is None:
         return None
     viewport = value if isinstance(value, Viewport) else Viewport(*value)
     if viewport.bottom > height:
-        raise ValueError('viewport bottom exceeds frame height')
+        raise InvalidArgumentError(
+            f'viewport bottom {viewport.bottom} exceeds frame height {height}'
+        )
+    if width is not None and viewport.right is not None and viewport.right > width:
+        raise InvalidArgumentError(f'viewport right {viewport.right} exceeds frame width {width}')
     return viewport
 
 
@@ -315,29 +337,34 @@ def _positions(
     if values is None:
         return None
     result = []
-    for value in values:
+    for index, value in enumerate(values):
         if isinstance(value, int):
             result.append((0, value))
-        elif len(value) == 2:
+        elif isinstance(value, (tuple, list)) and len(value) == 2:
             result.append((int(value[0]), int(value[1])))
         else:
-            raise ValueError('each position must be y or (x, y)')
+            raise InvalidArgumentError(
+                f'positions[{index}] must be an integer or an (x, y) pair, got {value!r}'
+            )
         if any(not (-(2**31) < coordinate < 2**31) for coordinate in result[-1]):
-            raise ValueError('position is outside i32 range')
+            raise InvalidArgumentError(f'positions[{index}] is outside the signed 32-bit range')
     return tuple(result)
 
 
 def _scroll(values: Sequence[int]) -> tuple[int, ...]:
     result = []
-    for value in values:
+    for index, value in enumerate(values):
         if isinstance(value, (tuple, list)):
-            raise ValueError('layered reconstruction accepts vertical scroll integers only')
+            raise InvalidArgumentError(
+                f'scroll[{index}] must be a vertical integer; got {value!r}. '
+                'Use the basic API for horizontal/2D positions.'
+            )
         result.append(int(value))
     result = tuple(result)
     if any(value < 0 for value in result):
-        raise ValueError('scroll positions must be non-negative')
+        raise InvalidArgumentError('scroll positions must be non-negative')
     if any(value > 2**31 - 1 for value in result):
-        raise ValueError('scroll position is outside i32 range')
+        raise InvalidArgumentError('scroll position is outside the signed 32-bit range')
     return result
 
 
@@ -355,41 +382,80 @@ def stitch_basic(
     options = AlignOptions() if options is None else options
     frames = _images(images)
     if not frames:
-        raise ValueError('at least one image is needed')
+        raise InvalidArgumentError('stitch_basic: at least one image is required')
     poses = _positions(positions)
     if poses is not None and len(poses) != len(frames):
-        raise ValueError('positions length must equal images length')
-    band = _viewport(viewport, frames[0].height)
+        raise InvalidArgumentError(
+            f'stitch_basic: positions has {len(poses)} entries but {len(frames)} images were supplied'
+        )
+    band = _viewport(viewport, frames[0].height, frames[0].width)
     return native_stitch(frames, poses, band, options, diagnostics)
+
+
+def _estimate_scroll(frames: Sequence[Image]) -> tuple[int, ...]:
+    """Estimate vertical scroll positions for layered reconstruction.
+
+    The basic matcher is used only to obtain initial relative positions. The
+    layered pipeline still performs its own content/evidence reconstruction.
+    """
+    from ._binding import stitch_basic as native_stitch
+
+    estimated = native_stitch(frames, None, None, AlignOptions(), False)
+    ys = []
+    for index, position in enumerate(estimated.positions):
+        if position is None:
+            raise InvalidArgumentError(
+                f'stitch_layered: could not estimate a position for frame {index}; '
+                'pass scroll=[...] explicitly'
+            )
+        ys.append(int(position[1]))
+    if not ys:
+        raise InvalidArgumentError('stitch_layered: no frames were supplied')
+    origin = min(ys)
+    return tuple(y - origin for y in ys)
 
 
 def stitch_layered(
     images: Sequence[str | Path | Image],
     *,
-    scroll: Sequence[int],
+    scroll: Sequence[int] | None = None,
     viewport: Viewport | tuple[int, int] | None = None,
     options: LayeredOptions | None = None,
     diagnostics: bool = False,
 ) -> LayeredResult:
-    """Reconstruct a vertically scrolling page using layered evidence."""
+    """Reconstruct a vertically scrolling page using layered evidence.
+
+    ``scroll`` is optional. When omitted, the basic matcher estimates vertical
+    positions; pass explicit positions when the page is highly occluded or
+    periodic, or when you need deterministic alignment.
+    """
     from ._binding import reconstruct_layered as native_reconstruct
 
     options = LayeredOptions() if options is None else options
     frames = _images(images)
     if not frames:
-        raise ValueError('at least one image is needed')
+        raise InvalidArgumentError('stitch_layered: at least one image is required')
     if len({(frame.width, frame.height) for frame in frames}) != 1:
-        raise ValueError('all frames must share dimensions')
-    positions = _scroll(scroll)
+        sizes = ', '.join(f'{frame.width}x{frame.height}' for frame in frames)
+        raise InvalidArgumentError(f'stitch_layered: all frames must share dimensions; got {sizes}')
+    positions = _scroll(scroll) if scroll is not None else _estimate_scroll(frames)
     if len(positions) != len(frames):
-        raise ValueError('one scroll position is required per frame')
-    band = _viewport(viewport, frames[0].height)
+        raise InvalidArgumentError(
+            f'stitch_layered: scroll has {len(positions)} entries but {len(frames)} images were supplied'
+        )
+    band = _viewport(viewport, frames[0].height, frames[0].width)
     for mask in (options.recurrent_mask, options.flat_mask):
         if mask is not None:
             if (mask.width, mask.height) != (frames[0].width, frames[0].height):
-                raise ValueError('prior mask dimensions must match frames')
+                raise InvalidArgumentError(
+                    'stitch_layered: prior mask dimensions '
+                    f'{mask.width}x{mask.height} do not match frame '
+                    f'{frames[0].width}x{frames[0].height}'
+                )
             if len(mask.frames) != len(frames):
-                raise ValueError('one prior mask per frame is required')
+                raise InvalidArgumentError(
+                    f'stitch_layered: prior mask has {len(mask.frames)} frames but {len(frames)} images were supplied'
+                )
     return native_reconstruct(frames, positions, band, options, diagnostics)
 
 
@@ -399,9 +465,12 @@ def plan_views(
     """Plan verification or repair views for an existing layered result."""
     options = PlanOptions() if options is None else options
     if not isinstance(result, LayeredResult):
-        raise TypeError('plan_views expects a LayeredResult')
+        raise TypeError(f'plan_views expects a LayeredResult, got {type(result).__name__}')
     if result._native is None:
-        raise ValueError('result does not carry a native planning handle')
+        raise InvalidArgumentError(
+            'plan_views: result does not carry a native planning handle; '
+            'reconstruct it with stitch_layered first'
+        )
     from ._binding import plan_layered
 
     return plan_layered(result, options)
@@ -420,16 +489,18 @@ def compose(
 
     layouts = {'vertical': 0, 'horizontal': 1, 'grid': 2, 'overlay': 3}
     if layout not in layouts:
-        raise ValueError('layout must be vertical/horizontal/grid/overlay')
+        raise InvalidArgumentError(
+            f'compose: unknown layout {layout!r}; expected vertical, horizontal, grid or overlay'
+        )
     if not isinstance(columns, int) or columns <= 0:
-        raise ValueError('columns must be positive')
+        raise InvalidArgumentError('compose: columns must be a positive integer')
     if not isinstance(gap, int) or not 0 <= gap <= 100000:
-        raise ValueError('gap must be between 0 and 100000')
+        raise InvalidArgumentError('compose: gap must be an integer between 0 and 100000')
     if len(background) != 3 or any(not isinstance(v, int) or not 0 <= v <= 255 for v in background):
-        raise ValueError('background must be an RGB tuple')
+        raise InvalidArgumentError('compose: background must be an RGB tuple of 0..255 integers')
     frames = _images(images)
     if not frames:
-        raise ValueError('at least one image is needed')
+        raise InvalidArgumentError('compose: at least one image is required')
     return native_compose(frames, layouts[layout], columns, gap, tuple(background))
 
 
