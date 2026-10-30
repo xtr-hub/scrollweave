@@ -1,6 +1,6 @@
 [package]
 name = "scrollweave"
-version = "0.9.3"
+version = "0.9.4"
 edition = "2021"
 rust-version = "1.73"
 description = "Dependency-free Rust engine for scroll screenshot reconstruction and basic image composition"

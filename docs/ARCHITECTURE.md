@@ -88,7 +88,7 @@ tools/                       smoke test and benchmark tools
 
 ## Python-facing architecture (0.2)
 
-`pip install .` uses `build_backend.py`, a standard-library-only PEP 517 backend, to run `cargo build --release --lib -p scrollweave-ffi`. The resulting `libscrollweave_ffi.so` / `.dylib` / `scrollweave_ffi.dll` is included inside a platform-specific `py3-none-<platform>` wheel. The PyPI 0.9.3 release includes Linux, Windows and macOS wheels plus a source distribution.
+`pip install .` uses `build_backend.py`, a standard-library-only PEP 517 backend, to run `cargo build --release --lib -p scrollweave-ffi`. The resulting `libscrollweave_ffi.so` / `.dylib` / `scrollweave_ffi.dll` is included inside a platform-specific `py3-none-<platform>` wheel. PyPI 0.9.3 includes Linux, Windows and macOS wheels plus a source distribution; 0.9.4 packaging is prepared for the next trusted-publishing run.
 
 At runtime: `scrollweave.api` (`Image`, option dataclasses, `BasicResult`/`LayeredResult`) → `scrollweave._binding` (`ctypes`) → `crates/scrollweave-ffi/src/lib.rs` (C ABI version 5, with the legacy basic symbols retained) → the core Rust codec/stitch/layered/planner modules. The Python layer owns bytes passed to the call; Rust clones them into engine-owned buffers. Result allocations are made by Rust and always freed with the matching `sw_*_free_*` function after `ctypes.string_at` copies the data to Python. The ABI is not a CPython extension ABI; it is a Rust `cdylib` loaded through the standard-library `ctypes` bridge.
 

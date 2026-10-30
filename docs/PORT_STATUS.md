@@ -10,6 +10,7 @@ Date: 2026-10-29. Goal: a genuine Python package executing image and UI reconstr
 | Image-only pair motion and global graph | `feature`, `align`, `graph`, `stitch` | Compiled / tested on Windows |
 | Stable full-width screen borders and activity envelope | `geometry` | Implemented with slightly different aggregation |
 | Automatic fixed header/sidebar content region | `layered` | Implemented from persistent full-width/full-height edges; six-scenario headless-browser regression |
+| Automatic inner scroll pane | `layered` + Python API | Implemented from temporal motion bounds with fixed chrome on all sides; stitches the pane only |
 | Small horizontal capture drift | `layered` | Implemented as automatic grayscale registration before content-region inference; fixes doubled text between real frames |
 | Temporal screen/document witness labels | `layered` | Implemented with evidence smoothing |
 | Screen-stationary edges | `layered` | Implemented with neighborhood dilation; median edges approximate |
@@ -31,7 +32,7 @@ Date: 2026-10-29. Goal: a genuine Python package executing image and UI reconstr
 ## Testing actually completed
 
 - Python 3.10+ API syntax validation (`compileall`): PASS.
-- Python `unittest` including API dispatch + PEP 517 packaging: **30 passed, 0 skipped** with the native library built.
+- Python `unittest` including API dispatch + PEP 517 packaging: **31 passed, 0 skipped** with the native library built.
 - Rust source bracket / structural audit: PASS (superseded by a real compiler run below).
 - Python→C ABI v5 round-trip was smoke-tested against a temporary compiled **C stub**: PASS. This only validates wrapper structure, not the Rust code.
 - `cargo test --workspace --all-targets`, `cargo build --release --workspace`, native FFI round trip: **PASS** on Windows (Rust 1.93.1). 15 library + 5 integration + 6 layered + 8 edge-case tests pass.
@@ -47,10 +48,10 @@ Date: 2026-10-29. Goal: a genuine Python package executing image and UI reconstr
 
 1. `cargo test --workspace` must succeed including `tests/layered.rs`. **PASS on Windows.**
 2. `python -m pip install . --no-build-isolation` must produce an importable `scrollweave` with native v5 ABI. **PASS in a clean venv.**
-3. Python integration tests must run with no skips. **PASS: 30/30.**
+3. Python integration tests must run with no skips. **PASS: 31/31.**
 4. Compare 15/30/UI & Japanese datasets against the *same full-page truth*, same positions/viewport, same coverage and masks. Track 1px geometry differences as a separate failure. **15-frame suite PASS on Windows; 30/UI/Japanese suites not available here.**
 5. Do not claim better MAE than the original research Python baseline unless measured. **No improvement claimed.**
 
 ## Build/tooling policy
 
-`pyproject.toml`: no Python build requirements; `Cargo.toml`: no third-party crates. Host must supply Python 3.10+, Rust/Cargo and an OS linker. `.tar.gz` is a **source distribution** and requires a native build. PyPI 0.9.3 includes Linux, Windows and macOS wheels plus an sdist.
+`pyproject.toml`: no Python build requirements; `Cargo.toml`: no third-party crates. Host must supply Python 3.10+, Rust/Cargo and an OS linker. `.tar.gz` is a **source distribution** and requires a native build. PyPI 0.9.3 includes Linux, Windows and macOS wheels plus an sdist; 0.9.4 is prepared for the next trusted-publishing run.

@@ -5,7 +5,7 @@ backend-path = ["."]
 
 [project]
 name = "scrollweave"
-version = "0.9.3"
+version = "0.9.4"
 description = "Rust-core, zero third-party dependency Python screenshot stitching library"
 readme = "README.md"
 requires-python = ">=3.10"
