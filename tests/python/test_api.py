@@ -109,6 +109,46 @@ class PythonInterfaceTests(unittest.TestCase):
         self.assertEqual((result.image.width, result.image.height), (width, height))
         self.assertEqual(result.image.rgb, page.rgb)
 
+    def test_auto_detects_inner_scrolling_pane(self):
+        from scrollweave.api import _detect_inner_scroll_region
+
+        width, height = 240, 200
+        header, left, right, bottom = 20, 40, 40, 20
+        page = Image(
+            width,
+            300,
+            bytes(
+                (x * 17 + y * 29 + ch * 41 + (x * y) % 67) % 256
+                for y in range(300)
+                for x in range(width)
+                for ch in range(3)
+            ),
+        )
+
+        def frame(scroll):
+            data = bytearray()
+            for y in range(height):
+                for x in range(width):
+                    if y < header or x < left or x >= width - right or y >= height - bottom:
+                        color = ((x * 3 + y * 5) % 60 + 20,) * 3
+                    else:
+                        source = (scroll + y - header) * width + x
+                        offset = source * 3
+                        color = page.rgb[offset : offset + 3]
+                    data.extend(color)
+            return Image(width, height, bytes(data))
+
+        frames = [frame(scroll) for scroll in (0, 50, 100)]
+        region = _detect_inner_scroll_region(frames)
+        self.assertIsNotNone(region)
+        self.assertLessEqual(region[0], left)
+        self.assertLessEqual(region[1], header)
+        self.assertGreaterEqual(region[2], width - right)
+        self.assertGreaterEqual(region[3], height - bottom)
+        result = stitch_layered(frames)
+        self.assertGreater(result.image.height, height)
+        self.assertLess(result.image.width, width)
+
 
 @unittest.skipUnless(HAS_NATIVE, 'Rust cdylib not built in this environment')
 class ActualRustIntegrationTests(unittest.TestCase):

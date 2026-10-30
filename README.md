@@ -15,6 +15,7 @@ and copies the original image pixels into the output. No image content is genera
 - Layered reconstruction of vertically scrolling pages
 - Automatic fixed-header/sidebar detection
 - Automatic small horizontal capture-drift correction
+- Automatic inner-pane detection for fixed application windows
 - Multi-band 2D gradient NCC with graph consensus for automatic offsets
 - Optional `Viewport` for explicit content regions
 - Basic 2D alignment and compositing

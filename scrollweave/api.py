@@ -392,15 +392,90 @@ def stitch_basic(
     return native_stitch(frames, poses, band, options, diagnostics)
 
 
-def _estimate_scroll(frames: Sequence[Image]) -> tuple[int, ...]:
-    """Estimate vertical scroll positions for layered reconstruction.
+def _crop_frame(image: Image, left: int, top: int, right: int, bottom: int) -> Image:
+    return Image(
+        right - left,
+        bottom - top,
+        b''.join(
+            image.rgb[(y * image.width + left) * 3 : (y * image.width + right) * 3]
+            for y in range(top, bottom)
+        ),
+    )
 
-    The basic matcher is used only to obtain initial relative positions. The
-    layered pipeline still performs its own content/evidence reconstruction.
-    """
+
+def _motion_span(counts, total, threshold, max_gap):
+    active = [index for index, value in enumerate(counts) if value / total >= threshold]
+    if not active:
+        return None
+    spans = []
+    start = previous = active[0]
+    for index in active[1:]:
+        if index - previous <= max_gap:
+            previous = index
+        else:
+            spans.append((start, previous))
+            start = previous = index
+    spans.append((start, previous))
+    return max(spans, key=lambda span: (span[1] - span[0], sum(counts[span[0] : span[1] + 1])))
+
+
+def _detect_inner_scroll_region(frames: Sequence[Image]) -> tuple[int, int, int, int] | None:
+    """Find a moving pane surrounded by fixed application chrome."""
+    if len(frames) < 2:
+        return None
+    width, height = frames[0].width, frames[0].height
+    if any(frame.width != width or frame.height != height for frame in frames):
+        return None
+    step = 4
+    column_samples = len(range(0, width, step))
+    row_samples = len(range(0, height, step))
+    row_hits = [0] * height
+    column_hits = [0] * width
+    for y in range(0, height, step):
+        base_row = y * width
+        for x in range(0, width, step):
+            offset = (base_row + x) * 3
+            base = frames[0].rgb[offset : offset + 3]
+            changed = False
+            for frame in frames[1:]:
+                other = frame.rgb[offset : offset + 3]
+                if max(abs(base[channel] - other[channel]) for channel in range(3)) > 12:
+                    changed = True
+                    break
+            if changed:
+                row_hits[y] += 1
+                column_hits[x] += 1
+    rows = _motion_span(row_hits, column_samples, 0.02, 48)
+    columns = _motion_span(column_hits, row_samples, 0.02, 48)
+    if rows is None or columns is None:
+        return None
+    # The moving pane must be surrounded by fixed chrome. If motion reaches a
+    # frame edge, this is a normal full-page/document scroll, not an inner pane.
+    if rows[0] < 16 or rows[1] > height - 16 or columns[0] < 16 or columns[1] > width - 16:
+        return None
+    margin = 12
+    top = max(16, rows[0] - margin)
+    bottom = min(height - 16, rows[1] + 1 + margin)
+    left = max(16, columns[0] - margin)
+    right = min(width - 16, columns[1] + 1 + margin)
+    if right - left < 32 or bottom - top < 32:
+        return None
+    area = (right - left) * (bottom - top)
+    if area < width * height * 0.05 or area > width * height * 0.92:
+        return None
+    return left, top, right, bottom
+
+
+def _estimate_scroll(frames: Sequence[Image], viewport: Viewport | None = None) -> tuple[int, ...]:
+    """Estimate vertical positions, optionally on a cropped content pane."""
     from ._binding import stitch_basic as native_stitch
 
-    estimated = native_stitch(frames, None, None, AlignOptions(), False)
+    matching_frames = frames
+    if viewport is not None:
+        bounds = viewport.bounds(frames[0].width)
+        if bounds is not None:
+            matching_frames = [_crop_frame(frame, *bounds) for frame in frames]
+    estimated = native_stitch(matching_frames, None, None, AlignOptions(), False)
     ys = []
     for index, position in enumerate(estimated.positions):
         if position is None:
@@ -425,9 +500,10 @@ def stitch_layered(
 ) -> LayeredResult:
     """Reconstruct a vertically scrolling page using layered evidence.
 
-    ``scroll`` is optional. When omitted, the basic matcher estimates vertical
-    positions; pass explicit positions when the page is highly occluded or
-    periodic, or when you need deterministic alignment.
+    When no viewport is supplied, a moving pane surrounded by fixed application
+    chrome is detected and stitched first. Otherwise the native layer infers the
+    page content region. ``scroll`` is optional; explicit positions are useful
+    for periodic or heavily occluded pages.
     """
     from ._binding import reconstruct_layered as native_reconstruct
 
@@ -438,12 +514,17 @@ def stitch_layered(
     if len({(frame.width, frame.height) for frame in frames}) != 1:
         sizes = ', '.join(f'{frame.width}x{frame.height}' for frame in frames)
         raise InvalidArgumentError(f'stitch_layered: all frames must share dimensions; got {sizes}')
-    positions = _scroll(scroll) if scroll is not None else _estimate_scroll(frames)
+    if viewport is None:
+        region = _detect_inner_scroll_region(frames)
+        if region is not None:
+            left, top, right, bottom = region
+            viewport = Viewport(top=top, bottom=bottom, left=left, right=right)
+    band = _viewport(viewport, frames[0].height, frames[0].width)
+    positions = _scroll(scroll) if scroll is not None else _estimate_scroll(frames, band)
     if len(positions) != len(frames):
         raise InvalidArgumentError(
             f'stitch_layered: scroll has {len(positions)} entries but {len(frames)} images were supplied'
         )
-    band = _viewport(viewport, frames[0].height, frames[0].width)
     for mask in (options.recurrent_mask, options.flat_mask):
         if mask is not None:
             if (mask.width, mask.height) != (frames[0].width, frames[0].height):
