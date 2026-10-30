@@ -740,6 +740,106 @@ pub fn infer_content_rect(images: &[Image]) -> Option<ContentRect> {
     }
 }
 
+fn gray_value(pixel: [u8; 3]) -> i32 {
+    (pixel[0] as i32 * 77 + pixel[1] as i32 * 150 + pixel[2] as i32 * 29) >> 8
+}
+
+fn shift_frame_x(image: &Image, dx: i32) -> SwResult<Image> {
+    if dx == 0 {
+        return Ok(image.clone());
+    }
+    let width = image.width;
+    let height = image.height;
+    let mut out = Image::solid(width, height, [255, 255, 255])?;
+    for y in 0..height {
+        for x in 0..width {
+            let source_x = (x as i32 - dx).clamp(0, width as i32 - 1) as usize;
+            let source = (y * width + source_x) * 3;
+            let target = (y * width + x) * 3;
+            out.rgb[target..target + 3].copy_from_slice(&image.rgb[source..source + 3]);
+        }
+    }
+    Ok(out)
+}
+
+fn estimate_horizontal_shift(reference: &Image, target: &Image, dy: i64) -> Option<i32> {
+    let width = reference.width;
+    let height = reference.height;
+    // Row `y` in the reference corresponds to row `y + dy` in the target.
+    let start = (-dy).max(0);
+    let end = (height as i64 - dy).min(height as i64);
+    if end - start < 24 {
+        return None;
+    }
+    let max_shift = 12i32.min((width as i32 - 1) / 4);
+    let margin = max_shift as usize + 2;
+    if width <= margin * 2 {
+        return None;
+    }
+    let mut best_dx = 0i32;
+    let mut best_score = f64::INFINITY;
+    let mut zero_score = f64::INFINITY;
+    for dx in -max_shift..=max_shift {
+        let mut total = 0u64;
+        let mut count = 0u64;
+        for y in start as usize..end as usize {
+            let target_y = (y as i64 + dy) as usize;
+            for x in margin..width - margin {
+                let target_x = (x as i32 + dx) as usize;
+                let reference_gray = gray_value(reference.pixel(x, y));
+                let target_gray = gray_value(target.pixel(target_x, target_y));
+                total += reference_gray.abs_diff(target_gray) as u64;
+                count += 1;
+            }
+        }
+        let score = total as f64 / count.max(1) as f64;
+        if dx == 0 {
+            zero_score = score;
+        }
+        if score < best_score || (score == best_score && dx.abs() < best_dx.abs()) {
+            best_dx = dx;
+            best_score = score;
+        }
+    }
+    if best_dx != 0 && best_score + 0.1 < zero_score * 0.9 {
+        Some(best_dx)
+    } else {
+        None
+    }
+}
+
+fn align_frames_horizontally(images: &[Image], positions: &[i32]) -> SwResult<Option<Vec<Image>>> {
+    if images.len() < 2 {
+        return Ok(None);
+    }
+    let mut aligned = Vec::with_capacity(images.len());
+    aligned.push(images[0].clone());
+    let mut changed = false;
+    for target in 1..images.len() {
+        let mut shift = None;
+        // Earlier frames are already aligned. Walk backwards when neighboring
+        // frames do not have enough vertical overlap for a reliable estimate.
+        for reference in (0..target).rev() {
+            let dy = positions[reference] as i64 - positions[target] as i64;
+            if let Some(dx) = estimate_horizontal_shift(&aligned[reference], &images[target], dy) {
+                shift = Some(dx);
+                break;
+            }
+        }
+        if let Some(dx) = shift {
+            aligned.push(shift_frame_x(&images[target], -dx)?);
+            changed = true;
+        } else {
+            aligned.push(images[target].clone());
+        }
+    }
+    if changed {
+        Ok(Some(aligned))
+    } else {
+        Ok(None)
+    }
+}
+
 pub fn reconstruct(
     images: &[Image],
     positions: &[i32],
@@ -752,6 +852,15 @@ pub fn reconstruct(
     if images.iter().any(|im| im.width != w || im.height != h) {
         return err("layered reconstruction requires identical frame geometry");
     }
+    let mut aligned_frames = None;
+    if opts.content.is_none()
+        && opts.viewport.is_none()
+        && opts.flat_mask.is_none()
+        && opts.recurrent_mask.is_none()
+    {
+        aligned_frames = align_frames_horizontally(images, positions)?;
+    }
+    let images = aligned_frames.as_deref().unwrap_or(images);
     if opts.content.is_none() && opts.viewport.is_none() {
         if let Some(content) = infer_content_rect(images) {
             let mut inner = opts.clone();

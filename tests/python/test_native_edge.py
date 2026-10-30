@@ -52,6 +52,37 @@ def frames_of(page, offsets, frame_height=40):
     ]
 
 
+def fixed_chrome_frame(page, scroll, header, sidebar, frame_height):
+    data = bytearray()
+    for y in range(frame_height):
+        for x in range(page.width):
+            if y < header - 1:
+                color = (250, 250, 250)
+            elif y == header - 1:
+                color = (40, 40, 40)
+            elif x < sidebar - 1:
+                color = (245, 245, 245)
+            elif x == sidebar - 1:
+                color = (40, 40, 40)
+            else:
+                source_y = scroll + y - header
+                offset = (source_y * page.width + x) * 3
+                color = page.rgb[offset : offset + 3]
+            data.extend(color)
+    return Image(page.width, frame_height, bytes(data))
+
+
+def shift_image_x(image, dx):
+    data = bytearray(image.width * image.height * 3)
+    for y in range(image.height):
+        for x in range(image.width):
+            source_x = min(image.width - 1, max(0, x - dx))
+            source = (y * image.width + source_x) * 3
+            target = (y * image.width + x) * 3
+            data[target : target + 3] = image.rgb[source : source + 3]
+    return Image(image.width, image.height, bytes(data))
+
+
 @unittest.skipUnless(HAS_NATIVE, 'Rust cdylib not built in this environment')
 class NativeLayeredContractTests(unittest.TestCase):
     def stitch(self, **kwargs):
@@ -181,25 +212,10 @@ class NativeLayeredContractTests(unittest.TestCase):
                 for y in range(height)
             ),
         )
-        frames = []
-        for scroll in (0, 30, 60):
-            data = bytearray()
-            for y in range(frame_height):
-                for x in range(width):
-                    if y < header - 1:
-                        color = (250, 250, 250)
-                    elif y == header - 1:
-                        color = (40, 40, 40)
-                    elif x < sidebar - 1:
-                        color = (245, 245, 245)
-                    elif x == sidebar - 1:
-                        color = (40, 40, 40)
-                    else:
-                        source_y = scroll + y - header
-                        offset = (source_y * width + x) * 3
-                        color = page.rgb[offset : offset + 3]
-                    data.extend(color)
-            frames.append(Image(width, frame_height, bytes(data)))
+        frames = [
+            fixed_chrome_frame(page, scroll, header, sidebar, frame_height)
+            for scroll in (0, 30, 60)
+        ]
         result = stitch_layered(
             frames,
             scroll=[0, 30, 60],
@@ -213,6 +229,35 @@ class NativeLayeredContractTests(unittest.TestCase):
             ),
         )
         self.assertEqual((result.image.width, result.image.height), (120, 108))
+        self.assertEqual(result.image.rgb, expected.rgb)
+
+    def test_auto_aligns_horizontal_capture_drift(self):
+        width, height, header, sidebar, frame_height = 200, 300, 12, 80, 120
+        page = Image(
+            width,
+            height,
+            b''.join(
+                bytes(((y * 37) % 256, (y * 91) % 256, (y * 17) % 256)) * width
+                for y in range(height)
+            ),
+        )
+        frames = [
+            shift_image_x(fixed_chrome_frame(page, scroll, header, sidebar, frame_height), drift)
+            for scroll, drift in ((0, 0), (40, 3), (80, 6))
+        ]
+        result = stitch_layered(
+            frames,
+            scroll=[0, 40, 80],
+            options=LayeredOptions(appearance=False, texture_strength=0.0),
+        )
+        expected = Image(
+            width - sidebar,
+            188,
+            b''.join(
+                page.rgb[(y * width + sidebar) * 3 : (y * width + width) * 3] for y in range(188)
+            ),
+        )
+        self.assertEqual((result.image.width, result.image.height), (120, 188))
         self.assertEqual(result.image.rgb, expected.rgb)
 
     def test_prior_and_plan_validation(self):
