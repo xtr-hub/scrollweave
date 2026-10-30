@@ -53,4 +53,4 @@ Date: 2026-10-29. Goal: a genuine Python package executing image and UI reconstr
 
 ## Build/tooling policy
 
-`pyproject.toml`: no Python build requirements; `Cargo.toml`: no third-party crates. Host must supply Python 3.10+, Rust/Cargo and an OS linker. `.tar.gz` is a **source distribution** and requires a native build. PyPI 0.9.1 includes Linux, Windows and macOS wheels plus an sdist.
+`pyproject.toml`: no Python build requirements; `Cargo.toml`: no third-party crates. Host must supply Python 3.10+, Rust/Cargo and an OS linker. `.tar.gz` is a **source distribution** and requires a native build. PyPI 0.9.1 includes Linux, Windows and macOS wheels plus an sdist; 0.9.2 is prepared for the next trusted-publishing run.

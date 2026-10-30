@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-EXPECTED_VERSION = '0.9.1'
+EXPECTED_VERSION = '0.9.2'
 
 
 class SmokeFailure(RuntimeError):
