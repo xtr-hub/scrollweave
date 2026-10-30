@@ -38,8 +38,8 @@ tools/                       smoke test and benchmark tools
    projections (not fixed non-overlapping patch grids).
 2. Estimate which screen rows have variation across images. Weight permanent chrome
    lower in translation search.
-3. Generate multiple plausible offsets from 1D correlations, verify with 2D robust
-   gradient / color scores, refine in integer pixels.
+3. Generate plausible offsets from row/column projections and masked multi-band 2D
+   gradient NCC, verify with 2D robust gradient / color scores, refine in integer pixels.
 4. Build an ordered or unordered pairwise constraint graph. Use a confidence-weighted
    spanning forest only as initialization; reject inconsistent redundant edges and
    update node positions via weighted median votes.

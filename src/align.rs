@@ -126,6 +126,172 @@ fn dense_score(
     let score = 0.65 * similarity + 0.35 * inlier - 0.10 * (1. - overlap);
     Some((score, overlap))
 }
+fn downsample_edge(feature: &Feature, factor: usize) -> (usize, usize, Vec<f32>) {
+    let width = (feature.width / factor).max(1);
+    let height = (feature.height / factor).max(1);
+    let mut out = vec![0f32; width * height];
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = 0u64;
+            let mut count = 0usize;
+            for sy in y * factor..(y * factor + factor).min(feature.height) {
+                for sx in x * factor..(x * factor + factor).min(feature.width) {
+                    sum += feature.edge[sy * feature.width + sx] as u64;
+                    count += 1;
+                }
+            }
+            out[y * width + x] = sum as f32 / count.max(1) as f32;
+        }
+    }
+    (width, height, out)
+}
+
+/// Generate offsets from masked multi-band 2-D gradient NCC.
+///
+/// Row projections are fast but can alias on repeated layouts. This coarse stage
+/// compares several horizontal bands independently and keeps offsets supported by
+/// more than one band. The full-resolution dense score still decides the winner.
+fn coarse_ncc_candidates(
+    a: &Feature,
+    b: &Feature,
+    activity: Option<&[f64]>,
+    allow_horizontal: bool,
+    min_overlap: f64,
+) -> Vec<(i32, i32)> {
+    if a.width != b.width || a.height != b.height {
+        return vec![];
+    }
+    let factor = 4usize;
+    if a.width < factor * 8 || a.height < factor * 8 {
+        return vec![];
+    }
+    let (aw, ah, ea) = downsample_edge(a, factor);
+    let (bw, bh, eb) = downsample_edge(b, factor);
+    if aw != bw || ah != bh {
+        return vec![];
+    }
+    let max_dy = ah as i32 - 1;
+    let max_dx = if allow_horizontal { 3 } else { 0 };
+    let bands = [
+        (0.12 * aw as f64, 0.48 * aw as f64),
+        (0.32 * aw as f64, 0.68 * aw as f64),
+        (0.55 * aw as f64, 0.92 * aw as f64),
+    ];
+    let mut votes = Vec::<(i32, i32, f64, usize)>::new();
+    for (band, (x0, x1)) in bands.into_iter().enumerate() {
+        let x0 = x0 as i32;
+        let x1 = x1 as i32;
+        let mut best = Vec::<(f64, i32, i32)>::new();
+        for dy in -max_dy..=max_dy {
+            let start = 0i32.max(dy);
+            let end = (ah as i32).min(ah as i32 + dy);
+            if end <= start {
+                continue;
+            }
+            let overlap = (end - start) as f64 / ah as f64;
+            if overlap < min_overlap {
+                continue;
+            }
+            // Ignore the top part of the overlap: that is usually fixed chrome.
+            let skip = ((end - start) as f64 * 0.12) as i32;
+            let start = start + skip;
+            if end <= start + 2 {
+                continue;
+            }
+            for dx in -max_dx..=max_dx {
+                let sx = 0i32.max(dx);
+                let ex = (aw as i32).min(aw as i32 + dx);
+                let x_start = (x0.max(sx)) as usize;
+                let x_end = (x1.min(ex)) as usize;
+                if x_end <= x_start + 2 {
+                    continue;
+                }
+                let mut sum_a = 0f64;
+                let mut sum_b = 0f64;
+                let mut sum_aa = 0f64;
+                let mut sum_bb = 0f64;
+                let mut sum_ab = 0f64;
+                let mut weight_sum = 0f64;
+                for y in start as usize..end as usize {
+                    let by = (y as i32 - dy) as usize;
+                    let row_weight = activity.map_or(1.0, |values| {
+                        let index = (y * factor).min(values.len().saturating_sub(1));
+                        values[index].max(0.06)
+                    });
+                    for x in x_start..x_end {
+                        let bx = (x as i32 - dx) as usize;
+                        let va = ea[y * aw + x] as f64;
+                        let vb = eb[by * bw + bx] as f64;
+                        let weight = row_weight;
+                        sum_a += weight * va;
+                        sum_b += weight * vb;
+                        sum_aa += weight * va * va;
+                        sum_bb += weight * vb * vb;
+                        sum_ab += weight * va * vb;
+                        weight_sum += weight;
+                    }
+                }
+                if weight_sum < 1.0 {
+                    continue;
+                }
+                let mean_a = sum_a / weight_sum;
+                let mean_b = sum_b / weight_sum;
+                let var_a = (sum_aa - sum_a * mean_a).max(0.0);
+                let var_b = (sum_bb - sum_b * mean_b).max(0.0);
+                let den = (var_a * var_b).sqrt();
+                if den < 1e-5 {
+                    continue;
+                }
+                let score = (sum_ab - sum_a * mean_b) / den;
+                if score > 0.35 {
+                    best.push((score, dx, dy));
+                }
+            }
+        }
+        best.sort_by(|a, b| b.0.total_cmp(&a.0));
+        // Keep spatially separated peaks per band.
+        let mut kept = 0usize;
+        for (score, dx, dy) in best {
+            if votes
+                .iter()
+                .filter(|v| v.3 == band)
+                .all(|v| (v.0 - dx).abs() > 2 || (v.1 - dy).abs() > 2)
+            {
+                votes.push((dx, dy, score, band));
+                kept += 1;
+                if kept >= 5 {
+                    break;
+                }
+            }
+        }
+    }
+    let mut clusters: Vec<(i32, i32, f64, u32)> = Vec::new();
+    for &(dx, dy, score, band) in &votes {
+        if let Some(cluster) = clusters
+            .iter_mut()
+            .find(|c| (c.0 - dx).abs() <= 2 && (c.1 - dy).abs() <= 2)
+        {
+            if score > cluster.2 {
+                cluster.2 = score;
+            }
+            cluster.3 |= 1 << band;
+        } else {
+            clusters.push((dx, dy, score, 1 << band));
+        }
+    }
+    clusters.sort_by(|a, b| {
+        b.3.count_ones()
+            .cmp(&a.3.count_ones())
+            .then(b.2.total_cmp(&a.2))
+    });
+    clusters
+        .into_iter()
+        .filter(|c| c.3.count_ones() >= 1)
+        .take(10)
+        .map(|(dx, dy, _, _)| (dx * factor as i32, dy * factor as i32))
+        .collect()
+}
+
 /// B's top-left coordinate relative to A; same-size, unrotated images.
 pub fn match_pair(
     a: &Feature,
@@ -160,6 +326,17 @@ pub fn match_pair(
     // Candidate generation is 1-D; verify at most a few 2-D hypotheses.
     // Refining every shift at full resolution would be O(pairs * shifts * pixels).
     let mut coarse = Vec::<Match>::new();
+    for (xx, yy) in coarse_ncc_candidates(a, b, activity, allow_horizontal, min_overlap) {
+        if let Some((score, overlap)) = dense_score(a, b, xx, yy, activity, 12, min_overlap) {
+            coarse.push(Match {
+                dx: xx,
+                dy: yy,
+                score,
+                overlap,
+                confidence: 0.,
+            })
+        }
+    }
     for yy in ys {
         for &xx in &xs {
             if let Some((score, overlap)) = dense_score(a, b, xx, yy, activity, 12, min_overlap) {
@@ -249,5 +426,30 @@ mod tests {
         let b = Feature::extract(&long.crop(0, 59, w, h).unwrap());
         let m = match_pair(&a, &b, None, false, 0.2).unwrap();
         assert!((m.dy - 59).abs() <= 1, "shift: {:?}", m)
+    }
+
+    #[test]
+    fn coarse_ncc_uses_two_dimensional_content() {
+        let w = 240;
+        let h = 200;
+        let mut page = Image::solid(w, 400, [20, 20, 20]).unwrap();
+        for y in 0..400 {
+            for x in 0..w {
+                let band = if (y / 20) % 2 == 0 { 40 } else { 120 };
+                page.set(x, y, [band, band, band]);
+            }
+        }
+        for y in 150..190 {
+            for x in 100..140 {
+                page.set(x, y, [250, 20, 20]);
+            }
+        }
+        let a = Feature::extract(&page.crop(0, 0, w, h).unwrap());
+        let b = Feature::extract(&page.crop(0, 100, w, h).unwrap());
+        let candidates = coarse_ncc_candidates(&a, &b, None, false, 0.2);
+        assert!(
+            candidates.iter().any(|&(_, dy)| (dy - 100).abs() <= 8),
+            "candidates: {candidates:?}"
+        );
     }
 }
