@@ -260,6 +260,15 @@ class NativeLayeredContractTests(unittest.TestCase):
         self.assertEqual((result.image.width, result.image.height), (120, 188))
         self.assertEqual(result.image.rgb, expected.rgb)
 
+        explicit = stitch_layered(
+            frames,
+            scroll=[0, 40, 80],
+            viewport=Viewport(header, frame_height, sidebar, width),
+            options=LayeredOptions(appearance=False, texture_strength=0.0),
+        )
+        self.assertEqual((explicit.image.width, explicit.image.height), (120, 188))
+        self.assertEqual(explicit.image.rgb, expected.rgb)
+
     def test_prior_and_plan_validation(self):
         page = page_image()
         frames = frames_of(page, [0, 20, 40])

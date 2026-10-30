@@ -853,11 +853,7 @@ pub fn reconstruct(
         return err("layered reconstruction requires identical frame geometry");
     }
     let mut aligned_frames = None;
-    if opts.content.is_none()
-        && opts.viewport.is_none()
-        && opts.flat_mask.is_none()
-        && opts.recurrent_mask.is_none()
-    {
+    if opts.flat_mask.is_none() && opts.recurrent_mask.is_none() {
         aligned_frames = align_frames_horizontally(images, positions)?;
     }
     let images = aligned_frames.as_deref().unwrap_or(images);
