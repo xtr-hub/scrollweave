@@ -1,6 +1,6 @@
-# Release status — ScrollWeave Python/Rust 0.9.4 (source prepared)
+# Release status — ScrollWeave Python/Rust 0.9.4
 
-**Rust-core Python library; native build and regression tests verified on Windows (Rust 1.93.1, Python 3.12.7). The 0.9.4 source, wheels and sdist are prepared; PyPI publication is pending the release workflow. `scrollweave 0.9.3` remains the latest published release.**
+**Rust-core Python library; native build and regression tests verified on Windows (Rust 1.93.1, Python 3.12.7). Published to PyPI as [`scrollweave 0.9.4`](https://pypi.org/project/scrollweave/0.9.4/); `pip install scrollweave==0.9.4` and inner-pane smoke tests passed.**
 
 Runtime dependency declarations: zero Python packages and zero third-party Cargo crates. Compilation requires installed Rust/Cargo and a platform linker. Native reconstruction algorithms are implemented in Rust source; Python manages ctypes/copies only.
 
