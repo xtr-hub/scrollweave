@@ -2,7 +2,7 @@
 
 A **Python library** with a **Rust-only algorithmic core**. Import with `import scrollweave`. Both Cargo dependencies and Python runtime dependencies are empty. Native build requires `rustc`/`cargo` and a working linker; Python 3.10+.
 
-> **Verification status (2026-10-30, Windows, Rust 1.93.1, Python 3.12.7)**: `cargo test --workspace --all-targets` passes (31 tests), `python -m unittest discover -s tests/python` passes (25 tests), `pip install .` builds and loads the native wheel, `tools/smoke_test.py` passes against both the source tree and the installed wheel, and `fixtures/shot_01..03.png` reconstruct `fixtures/expected_long.png` byte-exactly with positions `0,90,180` (MAE 0, height difference 0). The 15-frame regression suite also runs: truth 512x3306, output 512x3307, missing 0; MAE 0.1267 / exact 99.819% with masks and MAE 0.1822 / exact 99.728% without masks. A separate six-scenario headless-browser regression (fixed headers/sidebars, 2-3 scrolling frames) auto-detected the content region and produced clean content with MAE 0.01-0.03 after page padding. Byte-exact parity with the research Python prototype, 30/UI/Japanese suites and other platforms remain unverified. Treat this as a tested release for the shipped and 15-frame fixtures, not a production-certified binary.
+> **Verification status (2026-10-30, Windows, Rust 1.93.1, Python 3.12.7)**: `cargo test --workspace --all-targets` passes (31 tests), `python -m unittest discover -s tests/python` passes (26 tests), `pip install .` builds and loads the native wheel, `tools/smoke_test.py` passes against both the source tree and the installed wheel, and `fixtures/shot_01..03.png` reconstruct `fixtures/expected_long.png` byte-exactly with positions `0,90,180` (MAE 0, height difference 0). The 15-frame regression suite also runs: truth 512x3306, output 512x3307, missing 0; MAE 0.1267 / exact 99.819% with masks and MAE 0.1822 / exact 99.728% without masks. A separate six-scenario headless-browser regression (fixed headers/sidebars, 2-3 scrolling frames) auto-detected the content region and produced clean content with MAE 0.01-0.03 after page padding. A 3px horizontal capture drift between real web frames is now estimated and removed before reconstruction, eliminating doubled text in the overlap. Byte-exact parity with the research Python prototype, 30/UI/Japanese suites and other platforms remain unverified. Treat this as a tested release for the shipped and 15-frame fixtures, not a production-certified binary.
 
 ## Quick start
 
@@ -135,7 +135,7 @@ cdylib is named `scrollweave_ffi`. The Python console command is also `scrollwea
 | `align.rs`, `graph.rs` | Image-derived integer scroll offsets, overlap graph, robust pose optimization |
 | `geometry.rs` | Persistent screen-border detection + activity-envelope fallback |
 | `evidence.rs` | Independent position support, conflict and unverified maps; duplicate-view disambiguation |
-| `layered.rs` | Automatic fixed-header/sidebar content-region detection, rectangular frame cropping, document/screen evidence, transient candidates, morphology, appearance histogram, side rails, prior calibration, original pixel source selection |
+| `layered.rs` | Automatic horizontal capture-drift registration, fixed-header/sidebar content-region detection, rectangular frame cropping, document/screen evidence, transient candidates, morphology, appearance histogram, side rails, prior calibration, original pixel source selection |
 | `graphcut.rs` | Optional binary grid Potts mincut via pure Rust Dinic (experimental) |
 | `planner.rs` | Verification suggestions and expected repair suggestions |
 | `crates/scrollweave-ffi/src/lib.rs` | C ABI v5 to Python; buffers allocated and freed in Rust |
@@ -146,7 +146,7 @@ cdylib is named `scrollweave_ffi`. The Python console command is also `scrollwea
 - This is a **Rust reimplementation of the Python research algorithms**, *not* the Python research functions executed behind a thin Rust shell. Core operations are fully Rust; Python manages paths, arguments and copying result buffers.
 - It follows the layered **default behaviors / major research branches**, not line-for-line numerical reproduction. The Gaussian appearance filter, morphology, graphcut solver, edge statistics and source scoring have approximations/differences. Exact pixel parity is not yet verified. Refer to `docs/PORT_STATUS.md`.
 - The default layered algorithm is a layered RGB reconstruction method, **not** verified high-accuracy removal of all dynamic UI. Motion-tracked arbitrary moving object segmentation and OCR are not present in the original *working* default path, and are not asserted here.
-- The layered compositor currently handles vertically scrolling same-width/same-height frames. The basic matcher supports simpler horizontal alignment; the layered path explicitly rejects horizontal offsets.
+- The layered compositor handles vertically scrolling same-width/same-height frames and estimates small horizontal capture drift before reconstruction. Arbitrary 2D translation remains the basic matcher's job; the layered path explicitly rejects user-supplied horizontal offsets.
 - When scroll positions are not supplied, the older Rust feature/graph matcher estimates them. It is not guaranteed on heavy occlusion or near-blank screenshots and may decline input.
 - JPEG, HEIC and MP4 decoders are **not** included. Convert externally to PNG or supply raw RGB `Image` objects. No OCR or trained AI model.
 - Native behavior is verified by the tests and shipped fixtures above. No improvement over the research Python prototype is claimed, and automatic matcher results on periodic content can be ambiguous.
@@ -166,6 +166,14 @@ python tools/benchmark_native.py --truth fixtures/expected_long.png \
 ```
 
 `research/reference/` stores a **development-only frozen Python research reference** for future parity work; it is not imported or installed by ScrollWeave, and its scientific packages are neither runtime nor build dependencies of this Rust-backed library.
+
+### Release publishing
+
+Publishing a GitHub Release runs `.github/workflows/publish.yml`. The workflow verifies
+that the release tag matches the package version, builds the sdist and platform wheel,
+runs `twine check`, and uploads to PyPI through Trusted Publishing. Configure the PyPI
+trusted publisher once for owner `xtr-hub`, repository `scrollweave`, workflow
+`publish.yml` (no environment). Subsequent releases publish automatically.
 
 MIT license.
 

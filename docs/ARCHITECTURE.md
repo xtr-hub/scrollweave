@@ -45,13 +45,15 @@ tools/                       smoke test and benchmark tools
    update node positions via weighted median votes.
 5. Compare each aligned frame in *screen space* and *document space* to identify
    persistent UI that is inconsistent with document motion.
-6. When no explicit viewport is supplied, infer a rectangular content region from
+6. Estimate small horizontal capture drift between overlapping frames from
+   grayscale registration and translate frames to a common horizontal origin.
+7. When no explicit viewport is supplied, infer a rectangular content region from
    screen-stationary full-width horizontal and full-height vertical edges. Crop
    fixed headers/sidebars before layered reconstruction; skip cropping when no
    persistent chrome is found.
-7. At each document coordinate, compare available original RGB observations;
+8. At each document coordinate, compare available original RGB observations;
    prefer different-screen-origin agreement and penalize probable UI pixels.
-8. Save original RGB pixels, not a filtered image, along with provenance, coverage,
+9. Save original RGB pixels, not a filtered image, along with provenance, coverage,
    and uncertainty diagnostics.
 
 ## Research gaps / what is NOT claimed
@@ -86,7 +88,7 @@ tools/                       smoke test and benchmark tools
 
 ## Python-facing architecture (0.2)
 
-`pip install .` uses `build_backend.py`, a standard-library-only PEP 517 backend, to run `cargo build --release --lib -p scrollweave-ffi`. The resulting `libscrollweave_ffi.so` / `.dylib` / `scrollweave_ffi.dll` is included inside a platform-specific `py3-none-<platform>` wheel. The PyPI 0.9.0 release includes the Windows `py3-none-win_amd64` wheel and a source distribution; a source checkout builds locally with Cargo.
+`pip install .` uses `build_backend.py`, a standard-library-only PEP 517 backend, to run `cargo build --release --lib -p scrollweave-ffi`. The resulting `libscrollweave_ffi.so` / `.dylib` / `scrollweave_ffi.dll` is included inside a platform-specific `py3-none-<platform>` wheel. The PyPI 0.9.1 release includes the Windows `py3-none-win_amd64` wheel and a source distribution; a source checkout builds locally with Cargo.
 
 At runtime: `scrollweave.api` (`Image`, option dataclasses, `BasicResult`/`LayeredResult`) → `scrollweave._binding` (`ctypes`) → `crates/scrollweave-ffi/src/lib.rs` (C ABI version 5, with the legacy basic symbols retained) → the core Rust codec/stitch/layered/planner modules. The Python layer owns bytes passed to the call; Rust clones them into engine-owned buffers. Result allocations are made by Rust and always freed with the matching `sw_*_free_*` function after `ctypes.string_at` copies the data to Python. The ABI is not a CPython extension ABI; it is a Rust `cdylib` loaded through the standard-library `ctypes` bridge.
 

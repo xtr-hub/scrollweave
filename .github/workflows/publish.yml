@@ -1,0 +1,91 @@
+name: Publish to PyPI
+
+# One-time setup on PyPI:
+#   Project -> Settings -> Publishing -> Add a new trusted publisher
+#   Owner: xtr-hub
+#   Repository: scrollweave
+#   Workflow: publish.yml
+#   Environment: (leave blank)
+#
+# After that, publishing a GitHub Release builds the sdist/wheel and uploads it.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build tools
+        run: python -m pip install --upgrade build twine
+      - name: Verify release tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import re
+          import sys
+
+          expected = os.environ['RELEASE_TAG'].removeprefix('v')
+          text = pathlib.Path('pyproject.toml').read_text(encoding='utf-8')
+          actual = re.search(r'^version\s*=\s*["\']([^"\']+)["\']', text, re.M).group(1)
+          print(f'release tag version: {expected}; package version: {actual}')
+          if expected != actual:
+              sys.exit('release tag and package version differ')
+          PY
+      - name: Build sdist and wheel
+        run: python -m build --sdist --wheel
+      - name: Check distributions
+        run: python -m twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist
+      - name: Read release version
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: echo "value=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+      - name: Check whether this version is already on PyPI
+        id: existing
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          if curl -fsS "https://pypi.org/pypi/scrollweave/${VERSION}/json" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish to PyPI
+        if: steps.existing.outputs.exists != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+      - name: Version already published
+        if: steps.existing.outputs.exists == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: echo "scrollweave ${VERSION} is already on PyPI; nothing to upload."

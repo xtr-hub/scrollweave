@@ -35,14 +35,14 @@ class PackagingTests(unittest.TestCase):
             'cli': version('crates/scrollweave-cli/Cargo.toml'),
             'pyproject': version('pyproject.toml'),
         }
-        self.assertEqual(set(versions.values()), {'0.9.0'}, versions)
+        self.assertEqual(set(versions.values()), {'0.9.1'}, versions)
 
     def test_can_prepare_metadata(self):
         with tempfile.TemporaryDirectory() as d:
             folder = backend.prepare_metadata_for_build_wheel(d)
             metadata = (Path(d) / folder / 'METADATA').read_text(encoding='utf-8')
             self.assertIn('Name: scrollweave', metadata)
-            self.assertIn('Version: 0.9.0', metadata)
+            self.assertIn('Version: 0.9.1', metadata)
 
     def test_can_build_source_distribution(self):
         with tempfile.TemporaryDirectory() as d:
