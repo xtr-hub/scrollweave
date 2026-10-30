@@ -31,10 +31,10 @@ Date: 2026-10-29. Goal: a genuine Python package executing image and UI reconstr
 ## Testing actually completed
 
 - Python 3.10+ API syntax validation (`compileall`): PASS.
-- Python `unittest` including API dispatch + PEP 517 packaging: **26 passed, 0 skipped** with the native library built.
+- Python `unittest` including API dispatch + PEP 517 packaging: **30 passed, 0 skipped** with the native library built.
 - Rust source bracket / structural audit: PASS (superseded by a real compiler run below).
 - Python→C ABI v5 round-trip was smoke-tested against a temporary compiled **C stub**: PASS. This only validates wrapper structure, not the Rust code.
-- `cargo test --workspace --all-targets`, `cargo build --release --workspace`, native FFI round trip: **PASS** on Windows (Rust 1.93.1). 12 library + 5 integration + 6 layered + 8 edge-case tests pass.
+- `cargo test --workspace --all-targets`, `cargo build --release --workspace`, native FFI round trip: **PASS** on Windows (Rust 1.93.1). 14 library + 5 integration + 6 layered + 8 edge-case tests pass.
 - Quality gates: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo doc --workspace --no-deps`, `ruff format --check`, `ruff check`: **PASS**.
 - `pip install . --no-build-isolation` in a clean venv: **PASS**. The wheel builds, the console script runs, and the Python API loads native ABI v5.
 - `python tools/smoke_test.py`: **PASS** against both the source tree and the installed wheel (23 checks: ABI, fixtures, pixel-exact stitch, codec roundtrips, debug output, compose, CLI, error path).
@@ -47,10 +47,10 @@ Date: 2026-10-29. Goal: a genuine Python package executing image and UI reconstr
 
 1. `cargo test --workspace` must succeed including `tests/layered.rs`. **PASS on Windows.**
 2. `python -m pip install . --no-build-isolation` must produce an importable `scrollweave` with native v5 ABI. **PASS in a clean venv.**
-3. Python integration tests must run with no skips. **PASS: 26/26.**
+3. Python integration tests must run with no skips. **PASS: 30/30.**
 4. Compare 15/30/UI & Japanese datasets against the *same full-page truth*, same positions/viewport, same coverage and masks. Track 1px geometry differences as a separate failure. **15-frame suite PASS on Windows; 30/UI/Japanese suites not available here.**
 5. Do not claim better MAE than the original research Python baseline unless measured. **No improvement claimed.**
 
 ## Build/tooling policy
 
-`pyproject.toml`: no Python build requirements; `Cargo.toml`: no third-party crates. Host must supply Python 3.10+, Rust/Cargo and an OS linker. `.tar.gz` is a **source distribution** and requires a native build. PyPI 0.9.2 includes Linux, Windows and macOS wheels plus an sdist.
+`pyproject.toml`: no Python build requirements; `Cargo.toml`: no third-party crates. Host must supply Python 3.10+, Rust/Cargo and an OS linker. `.tar.gz` is a **source distribution** and requires a native build. PyPI 0.9.2 includes Linux, Windows and macOS wheels plus an sdist; 0.9.3 is prepared for the next trusted-publishing run.
