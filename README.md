@@ -170,10 +170,11 @@ python tools/benchmark_native.py --truth fixtures/expected_long.png \
 ### Release publishing
 
 Publishing a GitHub Release runs `.github/workflows/publish.yml`. The workflow verifies
-that the release tag matches the package version, builds the sdist and platform wheel,
-runs `twine check`, and uploads to PyPI through Trusted Publishing. Configure the PyPI
-trusted publisher once for owner `xtr-hub`, repository `scrollweave`, workflow
-`publish.yml` (no environment). Subsequent releases publish automatically.
+that the release tag matches the package version, builds the source distribution and
+platform wheels for Linux/Windows/macOS, runs `twine check`, and uploads through PyPI
+Trusted Publishing. Configure the PyPI trusted publisher once for owner `xtr-hub`,
+repository `scrollweave`, workflow `publish.yml` (no environment). Subsequent releases
+publish automatically.
 
 MIT license.
 
