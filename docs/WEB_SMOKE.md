@@ -88,6 +88,34 @@ python tools/web_smoke.py --count 8 --allow-small
 python tools/web_smoke.py --count 120 --no-capture --explicit
 ```
 
+## Arbitrary URLs and same-origin discovery
+
+The deterministic corpus is the regression gate.  For real pages, use the same
+capture/evaluation pipeline with `tools/web_crawl.py`:
+
+```shell
+# Explicit URLs
+python tools/web_crawl.py https://example.com https://example.org \
+    --root output/web_crawl --viewport 1280x800 --explicit
+
+# Same-origin BFS discovery from one or more seed pages
+python tools/web_crawl.py https://docs.python.org/3/ --discover-depth 2 \
+    --max-pages 25 --root output/web_crawl
+```
+
+For HTTP(S) pages the capture helper warms up lazy content, identifies
+fixed/sticky elements attached to a viewport edge from computed CSS, hides those
+edge elements in the full-page truth, and records their rectangles.  Local
+`file://` pages and the generated corpus still use explicit `data-chrome`
+markers.  The default URL viewport is 1280x800; use `--viewport`, `--wait-ms`,
+`--step-fraction` and `--jitter` to tune captures.
+
+Real sites may animate, rotate ads, use consent dialogs or load content after the
+last warm-up pass.  Treat a failure as a diagnostic and inspect the captured
+truth, frames and `metrics.json`; do not treat this mode as a guarantee for every
+production site.  `--discover-depth` uses a standard-library HTML link scan, so
+JavaScript-only navigation menus may need an explicit URL list.
+
 ## Verified result (2026-11-01)
 
 Windows 11, Chrome 156, Python 3.12.7, Rust 1.93.1, release FFI build:

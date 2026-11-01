@@ -304,7 +304,7 @@ def write_report(root: Path, summary: dict) -> None:
     lines += [
         '## Method',
         '',
-        'Chrome renders each local page at a real viewport.  Fixed chrome is removed',
+        'Chrome renders each page at a real viewport.  Fixed chrome is removed',
         'from the full-page truth with `visibility:hidden` (layout is unchanged), and',
         'the truth is cropped to the content rectangle measured from the DOM.  Frames',
         'are ordinary viewport screenshots at the recorded scroll positions.  No truth',

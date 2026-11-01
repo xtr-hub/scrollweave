@@ -126,6 +126,67 @@ function makeScrolls(scrollHeight, vh, fraction, jitter, seed) {
   return [...new Set(ys)].sort((a, b) => a - b);
 }
 
+async function warmup(send, sessionId, waitMs) {
+  // Trigger lazy images and infinite-ish content before measuring, then return
+  // to the top so the fixed-chrome probe sees the initial layout.
+  let previous = -1;
+  for (let pass = 0; pass < 16; pass++) {
+    const height = await evaluate(
+      send,
+      sessionId,
+      'Math.ceil((document.scrollingElement || document.documentElement).scrollHeight)',
+    );
+    if (height === previous) break;
+    previous = height;
+    await evaluate(send, sessionId, 'window.scrollTo(0, document.documentElement.scrollHeight); true');
+    await evaluate(send, sessionId, 'new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))', true);
+    await sleep(Math.min(500, Math.max(80, waitMs)));
+  }
+  await evaluate(send, sessionId, 'window.scrollTo(0, 0); true');
+  await evaluate(send, sessionId, 'new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))', true);
+  await sleep(Math.min(500, Math.max(100, waitMs)));
+}
+
+async function probeChrome(send, sessionId, generic) {
+  const expression = generic
+    ? `(() => {
+        const vw = innerWidth, vh = innerHeight;
+        const hidden = [];
+        const rects = [];
+        const seen = new Set();
+        for (const el of document.body.querySelectorAll('*')) {
+          let style;
+          try { style = getComputedStyle(el); } catch { continue; }
+          if (style.position !== 'fixed' && style.position !== 'sticky') continue;
+          if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) continue;
+          const r = el.getBoundingClientRect();
+          if (r.width < 16 || r.height < 8) continue;
+          if (hidden.some(parent => parent.contains(el))) continue;
+          const edge = 2;
+          let kind = null;
+          if (r.top <= edge && r.width >= vw * 0.25) kind = 'top';
+          else if (r.bottom >= vh - edge && r.width >= vw * 0.25) kind = 'bottom';
+          else if (r.left <= edge && r.height >= vh * 0.2) kind = 'left';
+          else if (r.right >= vw - edge && r.height >= vh * 0.2) kind = 'right';
+          if (!kind || seen.has(el)) continue;
+          seen.add(el);
+          hidden.push(el);
+          rects.push({ kind, x: r.x, y: r.y, width: r.width, height: r.height });
+        }
+        window.__swChrome = hidden;
+        return rects;
+      })()`
+    : `(() => {
+        const hidden = [...document.querySelectorAll('[data-chrome]')];
+        window.__swChrome = hidden;
+        return hidden.map(el => {
+          const r = el.getBoundingClientRect();
+          return { kind: el.getAttribute('data-chrome'), x: r.x, y: r.y, width: r.width, height: r.height };
+        });
+      })()`;
+  return evaluate(send, sessionId, expression);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const jobPath = args[0];
@@ -182,23 +243,27 @@ async function main() {
         deviceScaleFactor: 1,
         mobile: false,
       }, sessionId);
-      const url = pathToFileURL(join(root, page.html)).href;
-      await send('Page.navigate', { url }, sessionId);
+      const generic = Boolean(page.url);
+      const url = generic ? page.url : pathToFileURL(join(root, page.html)).href;
+      const navigation = await send('Page.navigate', { url }, sessionId);
+      if (navigation.errorText) throw new Error(`navigation failed for ${url}: ${navigation.errorText}`);
       await waitForReady(send, sessionId);
-      await evaluate(send, sessionId, 'window.scrollTo(0, 0); true');
-      await sleep(80);
+      if (generic) {
+        await sleep(Number(page.wait_ms) || 700);
+        await warmup(send, sessionId, Number(page.wait_ms) || 700);
+      } else {
+        await evaluate(send, sessionId, 'window.scrollTo(0, 0); true');
+        await sleep(80);
+      }
+      const rects = await probeChrome(send, sessionId, generic);
       const info = await evaluate(send, sessionId, `(() => {
         const scroll = document.scrollingElement || document.documentElement;
-        const rects = [...document.querySelectorAll('[data-chrome]')].map(el => {
-          const r = el.getBoundingClientRect();
-          return { kind: el.getAttribute('data-chrome'), x: r.x, y: r.y, width: r.width, height: r.height };
-        });
         return {
           innerWidth, innerHeight,
           scrollWidth: scroll.scrollWidth,
           scrollHeight: scroll.scrollHeight,
           title: document.title,
-          rects,
+          rects: ${JSON.stringify(rects)},
         };
       })()`);
       const scrolls = makeScrolls(info.scrollHeight, vh, page.step_fraction, page.jitter, page.index + 1);
@@ -217,7 +282,7 @@ async function main() {
       // one full-page capture.  The viewport geometry and scroll positions stay
       // exactly the same as in the frame captures.
       await evaluate(send, sessionId, `(() => {
-        document.querySelectorAll('[data-chrome]').forEach(el => el.style.visibility = 'hidden');
+        (window.__swChrome || []).forEach(el => el.style.visibility = 'hidden');
         window.scrollTo(0, 0);
         return true;
       })()`);
@@ -226,12 +291,14 @@ async function main() {
       const fullHeight = Math.max(vh, Math.ceil(info.scrollHeight));
       await screenshot(send, sessionId, join(captureDir, 'truth_full.png'), { width: vw, height: fullHeight });
       await evaluate(send, sessionId, `(() => {
-        document.querySelectorAll('[data-chrome]').forEach(el => el.style.visibility = '');
+        (window.__swChrome || []).forEach(el => el.style.visibility = '');
         window.scrollTo(0, 0);
         return true;
       })()`);
       const capture = {
         id: page.id,
+        url: generic ? page.url : undefined,
+        title: info.title,
         viewport: [vw, vh],
         inner: [info.innerWidth, info.innerHeight],
         scroll_size: [info.scrollWidth, info.scrollHeight],

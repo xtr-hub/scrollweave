@@ -198,6 +198,18 @@ known-geometry reference run. See `docs/WEB_SMOKE.md` for the protocol and pass
 criteria. The dataset is deterministic and is not committed; the generator is
 `tools/web_corpus.py` and the DevTools capture helper is `tools/web_capture.mjs`.
 
+The same capture/evaluation pipeline can crawl arbitrary HTTP(S) pages:
+
+```shell
+python tools/web_crawl.py https://example.com --root output/web_crawl --explicit
+python tools/web_crawl.py https://docs.python.org/3/ --discover-depth 2 --max-pages 25
+```
+
+`web_crawl.py` warms up lazy content, detects fixed/sticky edge chrome from
+computed CSS, and reports the same metrics. Real pages may contain animations or
+consent overlays, so use it as a diagnostic suite rather than a universal
+pixel-exact guarantee.
+
 `research/reference/` contains a frozen Python research reference used for future
 parity work. It is not imported or installed by the package.
 
