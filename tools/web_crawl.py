@@ -109,6 +109,7 @@ def main(argv=None) -> int:
     parser.add_argument('--max-pages', type=int, default=30)
     parser.add_argument('--discover-depth', type=int, default=0)
     parser.add_argument('--wait-ms', type=int, default=700)
+    parser.add_argument('--max-height', type=int, default=30000)
     parser.add_argument('--step-fraction', type=float, default=0.55)
     parser.add_argument('--jitter', type=float, default=0.02)
     parser.add_argument('--no-capture', action='store_true')
@@ -148,6 +149,7 @@ def main(argv=None) -> int:
                 'step_fraction': args.step_fraction,
                 'jitter': args.jitter,
                 'wait_ms': args.wait_ms,
+                'max_height': args.max_height,
             }
         )
     manifest = {'schema': 1, 'count': len(pages), 'pages': pages}
@@ -165,6 +167,7 @@ def main(argv=None) -> int:
                     'step_fraction': page['step_fraction'],
                     'jitter': page['jitter'],
                     'wait_ms': page['wait_ms'],
+                    'max_height': page['max_height'],
                     'index': page['index'],
                 }
                 for page in pages

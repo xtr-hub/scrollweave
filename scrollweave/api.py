@@ -521,28 +521,78 @@ def _estimate_scroll(frames: Sequence[Image], viewport: Viewport | None = None) 
             _crop_frame(frame, viewport.left, viewport.top, right, viewport.bottom)
             for frame in frames
         ]
-    estimated = native_stitch(matching_frames, None, None, AlignOptions(min_overlap=0.18), False)
-    ys = []
-    for index, position in enumerate(estimated.positions):
-        if position is None:
-            raise InvalidArgumentError(
-                f'stitch_layered: could not estimate a position for frame {index}; '
-                'pass scroll=[...] explicitly'
-            )
-        ys.append(int(position[1]))
-    if not ys:
+    if not matching_frames:
         raise InvalidArgumentError('stitch_layered: no frames were supplied')
+
+    def attempt(overlap: float):
+        try:
+            estimated = native_stitch(
+                matching_frames, None, None, AlignOptions(min_overlap=overlap), False
+            )
+        except InvalidArgumentError:
+            return None
+        return [None if position is None else int(position[1]) for position in estimated.positions]
+
+    def quality(values):
+        if values is None:
+            return (10**9, 10**9)
+        missing = sum(value is None for value in values)
+        known = [value for value in values if value is not None]
+        negative = sum(1 for a, b in zip(known, known[1:], strict=False) if b <= a)
+        return missing, negative
+
+    # The regular overlap works for normal captures.  Retry with a lower floor
+    # only when a frame is missing or a pair produced a backwards alias; this
+    # recovers short final overlaps without weakening clean captures.
+    candidates = []
+    for overlap in (0.18, 0.12, 0.08):
+        values = attempt(overlap)
+        candidates.append(values)
+        if quality(values) == (0, 0):
+            break
+    chosen = min(candidates, key=quality)
+    if chosen is None:
+        raise InvalidArgumentError(
+            'stitch_layered: could not estimate scroll positions; pass scroll=[...] explicitly'
+        )
+    ys = chosen
+    known = [(index, value) for index, value in enumerate(ys) if value is not None]
+    if not known:
+        raise InvalidArgumentError(
+            'stitch_layered: could not estimate any scroll position; pass scroll=[...] explicitly'
+        )
+    positive = sorted(
+        value - known[i - 1][1]
+        for i, (_, value) in enumerate(known)
+        if i > 0 and value - known[i - 1][1] > 0
+    )
+    if not positive:
+        raise InvalidArgumentError(
+            'stitch_layered: no forward scroll motion found; pass scroll=[...] explicitly'
+        )
+    median = positive[len(positive) // 2]
+    # Fill isolated unmatched frames from the nearest reliable positions.  The
+    # resulting page is still made only from real source pixels; only the
+    # document placement is interpolated.
+    for index, value in enumerate(ys):
+        if value is not None:
+            continue
+        previous = next(((i, v) for i, v in reversed(known) if i < index), None)
+        following = next(((i, v) for i, v in known if i > index), None)
+        if previous is not None and following is not None:
+            span = following[0] - previous[0]
+            ys[index] = int(
+                round(previous[1] + (following[1] - previous[1]) * (index - previous[0]) / span)
+            )
+        elif previous is not None:
+            ys[index] = previous[1] + median
+        else:
+            ys[index] = following[1] - median
     # Frames are supplied in capture order.  A negative step is therefore a
     # periodic-content alias, not a real scroll direction; repair it from the
     # other positive steps instead of letting one bad pair drag the whole page.
     if len(ys) > 1:
         steps = [ys[i + 1] - ys[i] for i in range(len(ys) - 1)]
-        positive = sorted(step for step in steps if step > 0)
-        if not positive:
-            raise InvalidArgumentError(
-                'stitch_layered: no forward scroll motion found; pass scroll=[...] explicitly'
-            )
-        median = positive[len(positive) // 2]
         for index, step in enumerate(steps):
             if step <= 0:
                 neighbours = [
@@ -594,6 +644,14 @@ def stitch_layered(
                 viewport = Viewport(top=top, bottom=bottom, left=left, right=right)
     band = _viewport(viewport, frames[0].height, frames[0].width)
     positions = _scroll(scroll) if scroll is not None else _estimate_scroll(frames, band)
+    # With very little vertical motion, the activity-envelope fallback can
+    # mistake ordinary page padding for fixed chrome and crop visible content.
+    # When no explicit region was found, keep the full frame instead.
+    if viewport is None and len(positions) > 1:
+        span = max(positions) - min(positions)
+        if span <= max(48, int(frames[0].height * 0.12)):
+            viewport = Viewport(0, frames[0].height)
+            band = viewport
     if len(positions) != len(frames):
         raise InvalidArgumentError(
             f'stitch_layered: scroll has {len(positions)} entries but {len(frames)} images were supplied'

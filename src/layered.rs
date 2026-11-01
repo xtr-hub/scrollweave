@@ -957,7 +957,13 @@ pub fn infer_content_rect(images: &[Image]) -> Option<ContentRect> {
     .unwrap_or(height);
     let left = left_edge.unwrap_or(0);
     let right = right_edge.unwrap_or(width);
-    if top >= bottom || left >= right || bottom - top < 24 || right - left < 24 {
+    if top >= bottom
+        || left >= right
+        || bottom - top < 24
+        || right - left < 24
+        || (right - left) * 4 < width
+        || (bottom - top) * 4 < height
+    {
         return None;
     }
     if top == 0 && bottom == height && left == 0 && right == width {

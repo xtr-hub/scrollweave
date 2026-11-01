@@ -116,6 +116,23 @@ truth, frames and `metrics.json`; do not treat this mode as a guarantee for ever
 production site.  `--discover-depth` uses a standard-library HTML link scan, so
 JavaScript-only navigation menus may need an explicit URL list.
 
+### Robustness behavior
+
+- A navigation failure or one bad URL does not abort the crawl: the page gets an
+  `error.json`, and the remaining URLs continue.  Navigations retry once.
+- Pages taller than `--max-height` (default 30000 px) or requiring more than 64
+  viewport frames are rejected with a clear per-page error instead of exhausting
+  memory or producing a silently truncated page.
+- Stale capture directories are removed before recapture, so a previous
+  successful run cannot mask a current failure.
+- Very short pages use the full frame instead of the activity-envelope fallback,
+  which can otherwise mistake page padding for fixed chrome.
+- When a frame cannot be matched, automatic scroll estimation retries with lower
+  overlap floors and interpolates an isolated missing position from neighboring
+  frames rather than failing the entire reconstruction.
+- Content-region inference rejects implausibly small crops (less than 25% of the
+  frame width or height).
+
 ## Verified result (2026-11-01)
 
 Windows 11, Chrome 156, Python 3.12.7, Rust 1.93.1, release FFI build:

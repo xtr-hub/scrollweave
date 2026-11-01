@@ -4,10 +4,10 @@
  * This intentionally uses only Node built-ins.  It drives Chrome over the
  * DevTools Protocol, so no Playwright/Puppeteer/npm install is required.
  *
- * Job file: { root: "...", pages: [{ id, html, viewport:[w,h],
- *            step_fraction, jitter }] }
+ * Job file: { root: "...", pages: [{ id, html | url, viewport:[w,h],
+ *            step_fraction, jitter, wait_ms?, max_height? }] }
  * Results: <root>/pages/<id>/capture/frame_NNN.png, truth_full.png,
- *          capture.json
+ *          capture.json, or error.json when one page cannot be captured.
  */
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -85,6 +85,17 @@ async function screenshot(send, sessionId, path, clip = null) {
   writeFileSync(path, Buffer.from(result.data, 'base64'));
 }
 
+async function navigateWithRetry(send, sessionId, url, attempts = 2) {
+  let last = null;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const result = await send('Page.navigate', { url }, sessionId);
+    if (!result.errorText) return;
+    last = result.errorText;
+    await sleep(400 + attempt * 600);
+  }
+  throw new Error(`navigation failed for ${url}: ${last || 'unknown error'}`);
+}
+
 async function waitForReady(send, sessionId) {
   for (let i = 0; i < 80; i++) {
     const state = await evaluate(send, sessionId, 'document.readyState');
@@ -117,6 +128,9 @@ function makeScrolls(scrollHeight, vh, fraction, jitter, seed) {
     next = Math.max(ys[ys.length - 1] + minStep, Math.min(max, next, ys[ys.length - 1] + maxStep));
     ys.push(next);
     if (ys.length >= 64) break;
+  }
+  if (max - ys[ys.length - 1] > maxStep) {
+    throw new Error(`page needs more than 64 frames; raise the scroll step or page height limit`);
   }
   if (ys[ys.length - 1] !== max) {
     // Append the final position; replacing the previous frame would create one
@@ -236,7 +250,9 @@ async function main() {
       const [vw, vh] = page.viewport;
       const pageDir = join(root, 'pages', page.id);
       const captureDir = join(pageDir, 'capture');
+      rmSync(captureDir, { recursive: true, force: true });
       mkdirSync(captureDir, { recursive: true });
+      try {
       await send('Emulation.setDeviceMetricsOverride', {
         width: vw,
         height: vh,
@@ -245,8 +261,7 @@ async function main() {
       }, sessionId);
       const generic = Boolean(page.url);
       const url = generic ? page.url : pathToFileURL(join(root, page.html)).href;
-      const navigation = await send('Page.navigate', { url }, sessionId);
-      if (navigation.errorText) throw new Error(`navigation failed for ${url}: ${navigation.errorText}`);
+      await navigateWithRetry(send, sessionId, url);
       await waitForReady(send, sessionId);
       if (generic) {
         await sleep(Number(page.wait_ms) || 700);
@@ -266,6 +281,10 @@ async function main() {
           rects: ${JSON.stringify(rects)},
         };
       })()`);
+      const maxHeight = Math.max(1000, Number(page.max_height) || 30000);
+      if (info.scrollHeight > maxHeight) {
+        throw new Error(`page is too tall for the smoke capture: ${info.scrollHeight}px > ${maxHeight}px`);
+      }
       const scrolls = makeScrolls(info.scrollHeight, vh, page.step_fraction, page.jitter, page.index + 1);
       const frames = [];
       for (let k = 0; k < scrolls.length; k++) {
@@ -309,6 +328,14 @@ async function main() {
       };
       writeFileSync(join(captureDir, 'capture.json'), JSON.stringify(capture, null, 2));
       process.stderr.write(`[capture] ${i + 1}/${total} ${page.id} frames=${frames.length} h=${info.scrollHeight}\n`);
+      } catch (error) {
+        // One bad URL must not discard the rest of a crawl.
+        writeFileSync(
+          join(captureDir, 'error.json'),
+          JSON.stringify({ error: String(error), stack: error.stack || null }, null, 2),
+        );
+        process.stderr.write(`[capture] ${i + 1}/${total} ${page.id} FAILED: ${error}\n`);
+      }
     }
     ws.close();
   } finally {

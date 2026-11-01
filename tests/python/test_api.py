@@ -1,6 +1,8 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from scrollweave import (
     AlignOptions,
@@ -108,6 +110,15 @@ class PythonInterfaceTests(unittest.TestCase):
         result = stitch_layered(frames)
         self.assertEqual((result.image.width, result.image.height), (width, height))
         self.assertEqual(result.image.rgb, page.rgb)
+
+    def test_unmatched_scroll_position_is_interpolated(self):
+        from scrollweave.api import _estimate_scroll
+
+        frames = [Image(10, 20, b'\x00' * 600) for _ in range(4)]
+        estimated = SimpleNamespace(positions=((0, 0), (0, 100), None, (0, 300)))
+        with patch('scrollweave._binding.stitch_basic', return_value=estimated):
+            positions = _estimate_scroll(frames)
+        self.assertEqual(positions, (0, 100, 200, 300))
 
     def test_auto_detects_inner_scrolling_pane(self):
         from scrollweave.api import _detect_inner_scroll_region

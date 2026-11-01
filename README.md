@@ -206,9 +206,11 @@ python tools/web_crawl.py https://docs.python.org/3/ --discover-depth 2 --max-pa
 ```
 
 `web_crawl.py` warms up lazy content, detects fixed/sticky edge chrome from
-computed CSS, and reports the same metrics. Real pages may contain animations or
-consent overlays, so use it as a diagnostic suite rather than a universal
-pixel-exact guarantee.
+computed CSS, and reports the same metrics. Capture failures are isolated per
+page, stale captures are cleared, and oversized/tall pages fail with a clear
+per-page diagnostic instead of aborting the crawl. Real pages may still contain
+animations or consent overlays, so use it as a diagnostic suite rather than a
+universal pixel-exact guarantee.
 
 `research/reference/` contains a frozen Python research reference used for future
 parity work. It is not imported or installed by the package.
