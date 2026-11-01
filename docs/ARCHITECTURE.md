@@ -27,9 +27,9 @@ tests/                       Rust integration tests
 tests/python/                Python unittest suite
 fixtures/                    shared image fixtures
 docs/                        architecture and status documents
+tools/                       smoke test, browser corpus and benchmark tools
 research/reference/          frozen research reference (not built)
 examples/                    small usage examples
-tools/                       smoke test and benchmark tools
 ```
 
 ## Processing
@@ -47,10 +47,12 @@ tools/                       smoke test and benchmark tools
    persistent UI that is inconsistent with document motion.
 6. Estimate small horizontal capture drift between overlapping frames from
    grayscale registration and translate frames to a common horizontal origin.
-7. When no explicit viewport is supplied, infer a rectangular content region from
-   screen-stationary full-width horizontal and full-height vertical edges. Crop
-   fixed headers/sidebars before layered reconstruction; skip cropping when no
-   persistent chrome is found.
+7. When no explicit viewport is supplied, align small horizontal capture drift,
+   then infer a rectangular content region from persistent top/bottom/left/right
+   edges, stable chrome plateaus and temporal-variance jumps. Opaque, gradient and
+   translucent fixed headers are all handled. Crop fixed headers, footers and
+   sidebar rails before layered reconstruction; skip cropping when no persistent
+   chrome is found.
 8. At each document coordinate, compare available original RGB observations;
    prefer different-screen-origin agreement and penalize probable UI pixels.
 9. Save original RGB pixels, not a filtered image, along with provenance, coverage,

@@ -419,6 +419,41 @@ def _motion_span(counts, total, threshold, max_gap):
     return max(spans, key=lambda span: (span[1] - span[0], sum(counts[span[0] : span[1] + 1])))
 
 
+def _side_texture(
+    frames: Sequence[Image], side: str, left: int, top: int, right: int, bottom: int
+) -> float:
+    """Fraction of sampled pixels in a margin band that carry local texture."""
+    width, height = frames[0].width, frames[0].height
+    if side in ('left', 'right'):
+        if side == 'left':
+            xs = range(max(0, left - 12), max(0, left - 1))
+        else:
+            xs = range(right, min(width, right + 12))
+        ys = range(top + 2, max(top + 3, bottom - 2), 3)
+        coords = [(x, y) for x in xs for y in ys]
+        horizontal = True
+    else:
+        if side == 'top':
+            ys = range(max(0, top - 12), max(0, top - 1))
+        else:
+            ys = range(bottom, min(height, bottom + 12))
+        xs = range(left + 2, max(left + 3, right - 2), 3)
+        coords = [(x, y) for y in ys for x in xs]
+        horizontal = False
+    total = textured = 0
+    for x, y in coords:
+        for frame in frames:
+            base = (y * width + x) * 3
+            if horizontal:
+                neighbor = (y * width + min(width - 1, x + 1)) * 3
+            else:
+                neighbor = (min(height - 1, y + 1) * width + x) * 3
+            if max(abs(frame.rgb[base + c] - frame.rgb[neighbor + c]) for c in range(3)) > 10:
+                textured += 1
+            total += 1
+    return textured / max(1, total)
+
+
 def _detect_inner_scroll_region(frames: Sequence[Image]) -> tuple[int, int, int, int] | None:
     """Find a moving pane surrounded by fixed application chrome."""
     if len(frames) < 2:
@@ -463,6 +498,15 @@ def _detect_inner_scroll_region(frames: Sequence[Image]) -> tuple[int, int, int,
     area = (right - left) * (bottom - top)
     if area < width * height * 0.05 or area > width * height * 0.92:
         return None
+    # Centered page content can look like an inner pane because its side
+    # margins are temporally stable.  Real application chrome carries texture
+    # (toolbars, labels, controls) on every side of the pane.
+    margins = [
+        _side_texture(frames, side, left, top, right, bottom)
+        for side in ('left', 'right', 'top', 'bottom')
+    ]
+    if min(margins) < 0.004:
+        return None
     return left, top, right, bottom
 
 
@@ -472,10 +516,12 @@ def _estimate_scroll(frames: Sequence[Image], viewport: Viewport | None = None) 
 
     matching_frames = frames
     if viewport is not None:
-        bounds = viewport.bounds(frames[0].width)
-        if bounds is not None:
-            matching_frames = [_crop_frame(frame, *bounds) for frame in frames]
-    estimated = native_stitch(matching_frames, None, None, AlignOptions(), False)
+        right = frames[0].width if viewport.right is None else viewport.right
+        matching_frames = [
+            _crop_frame(frame, viewport.left, viewport.top, right, viewport.bottom)
+            for frame in frames
+        ]
+    estimated = native_stitch(matching_frames, None, None, AlignOptions(min_overlap=0.18), False)
     ys = []
     for index, position in enumerate(estimated.positions):
         if position is None:
@@ -486,6 +532,26 @@ def _estimate_scroll(frames: Sequence[Image], viewport: Viewport | None = None) 
         ys.append(int(position[1]))
     if not ys:
         raise InvalidArgumentError('stitch_layered: no frames were supplied')
+    # Frames are supplied in capture order.  A negative step is therefore a
+    # periodic-content alias, not a real scroll direction; repair it from the
+    # other positive steps instead of letting one bad pair drag the whole page.
+    if len(ys) > 1:
+        steps = [ys[i + 1] - ys[i] for i in range(len(ys) - 1)]
+        positive = sorted(step for step in steps if step > 0)
+        if not positive:
+            raise InvalidArgumentError(
+                'stitch_layered: no forward scroll motion found; pass scroll=[...] explicitly'
+            )
+        median = positive[len(positive) // 2]
+        for index, step in enumerate(steps):
+            if step <= 0:
+                neighbours = [
+                    steps[j] for j in (index - 1, index + 1) if 0 <= j < len(steps) and steps[j] > 0
+                ]
+                steps[index] = sorted(neighbours)[len(neighbours) // 2] if neighbours else median
+        ys = [ys[0]]
+        for step in steps:
+            ys.append(ys[-1] + step)
     origin = min(ys)
     return tuple(y - origin for y in ys)
 
@@ -519,6 +585,13 @@ def stitch_layered(
         if region is not None:
             left, top, right, bottom = region
             viewport = Viewport(top=top, bottom=bottom, left=left, right=right)
+        else:
+            from ._binding import detect_layered_content
+
+            content = detect_layered_content(frames)
+            if content is not None:
+                left, top, right, bottom = content
+                viewport = Viewport(top=top, bottom=bottom, left=left, right=right)
     band = _viewport(viewport, frames[0].height, frames[0].width)
     positions = _scroll(scroll) if scroll is not None else _estimate_scroll(frames, band)
     if len(positions) != len(frames):

@@ -9,7 +9,7 @@ Date: 2026-10-29. Goal: a genuine Python package executing image and UI reconstr
 | Basic PNG/BMP/PPM + raw RGB, integer source-pixel copying | `codec`, `image`, `compose` | Compiled / tested on Windows |
 | Image-only pair motion and global graph | `feature`, `align`, `graph`, `stitch` | Compiled / tested on Windows |
 | Stable full-width screen borders and activity envelope | `geometry` | Implemented with slightly different aggregation |
-| Automatic fixed header/sidebar content region | `layered` | Implemented from persistent full-width/full-height edges; six-scenario headless-browser regression |
+| Automatic fixed header/footer/sidebar content region | `layered` | Implemented from four-side persistent edges, stable plateaus and temporal-variance jumps; 120-page headless-Chrome regression |
 | Automatic inner scroll pane | `layered` + Python API | Implemented from temporal motion bounds with fixed chrome on all sides; stitches the pane only |
 | Small horizontal capture drift | `layered` | Implemented as automatic grayscale registration before content-region inference; fixes doubled text between real frames |
 | Temporal screen/document witness labels | `layered` | Implemented with evidence smoothing |
@@ -42,6 +42,7 @@ Date: 2026-10-29. Goal: a genuine Python package executing image and UI reconstr
 - Shipped 3-frame fixture vs `fixtures/expected_long.png`, positions `0,90,180`: **exact 120x330 page, MAE 0, height difference 0**.
 - 15-frame full regression ZIP: **PASS** on Windows. Truth 512x3306; output 512x3307; missing pixels 0. With masks: MAE 0.1267, exact 99.819%. Without masks: MAE 0.1822, exact 99.728%. Research-prototype numerical parity is still not established.
 - Six-scenario headless-browser regression (1440x900 to 1600x900 viewports; fixed headers 48-130 px; fixed sidebars 0-360 px; 2-3 scrolling frames): automatic content-region detection removed fixed chrome with content MAE **0.010-0.533** after page padding, and the no-fixed-UI control was not cropped. The capture dataset is development-only and not shipped.
+- 120-page deterministic headless-Chrome corpus (390x844 to 1600x900; opaque, gradient, glass and dark headers; top/bottom/left/right chrome combinations; 2-7 viewport pages): **automatic 120/120 and known-geometry 120/120**. Every output has the exact truth width and height, zero missing pixels, max MAE 0.069 / min exact 99.848%, median MAE 0.000 / median exact 100% over 446,559,168 compared pixels. See `docs/WEB_SMOKE.md`; generated data is not shipped.
 - Automatic position estimation on the bundled periodic fixture selects a content-equivalent alias: **limitation observed**, use explicit offsets for that fixture.
 
 ## A strict next acceptance test for native users

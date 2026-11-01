@@ -1,6 +1,7 @@
 //! Layered reconstruction: document/screen evidence, adaptive UI
 //! appearance, rails, source selection, and uncertainty. Integer-aligned original RGB only.
 use crate::evidence::{self, AuditOptions, Evidence};
+use crate::feature::Feature;
 use crate::geometry::{self, GeometryMode};
 use crate::image::{err, Image, SwResult};
 use std::collections::BTreeSet;
@@ -651,11 +652,67 @@ fn longest_run(flags: impl Iterator<Item = bool>) -> usize {
     best
 }
 
+fn edge_clusters(flags: &[bool], lo: usize, hi: usize) -> Vec<(usize, usize)> {
+    let mut clusters = Vec::new();
+    let mut start = None;
+    for (index, &flag) in flags.iter().enumerate().take(hi.min(flags.len())).skip(lo) {
+        if flag {
+            start.get_or_insert(index);
+        } else if let Some(first) = start.take() {
+            clusters.push((first, index - 1));
+        }
+    }
+    if let Some(first) = start {
+        clusters.push((first, hi.min(flags.len()) - 1));
+    }
+    clusters
+}
+
+/// A low-contrast border can split the gradient response into two clusters
+/// (one for each side of the border). Merge clusters separated by a tiny gap.
+fn merged_clusters(flags: &[bool], lo: usize, hi: usize, gap: usize) -> Vec<(usize, usize)> {
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (a, b) in edge_clusters(flags, lo, hi) {
+        if let Some(last) = merged.last_mut() {
+            if a <= last.1 + gap {
+                last.1 = b;
+                continue;
+            }
+        }
+        merged.push((a, b));
+    }
+    merged
+}
+
+fn band_texture_range(image: &Image, start: usize, end: usize, left: usize, right: usize) -> f64 {
+    if end <= start || left >= right {
+        return 0.;
+    }
+    let mut total = 0f64;
+    for y in start..end {
+        let mut sum = 0f64;
+        let mut square = 0f64;
+        for x in left..right.min(image.width) {
+            let pixel = image.pixel(x, y);
+            let value =
+                (pixel[0] as f64 * 77. + pixel[1] as f64 * 150. + pixel[2] as f64 * 29.) / 256.;
+            sum += value;
+            square += value * value;
+        }
+        let count = (right.min(image.width) - left).max(1) as f64;
+        total += ((square / count - (sum / count).powi(2)).max(0.)).sqrt();
+    }
+    total / (end - start) as f64
+}
+
 /// Find fixed page chrome from persistent full-width/height edges.
 ///
-/// A fixed header usually leaves a full-width horizontal border, and a fixed
-/// sidebar a full-height vertical border. Content edges move with scrolling and
-/// therefore do not persist at the same screen coordinate.
+/// A fixed header or footer leaves a full-width horizontal border; a fixed
+/// sidebar leaves a full-height vertical border. Content edges move with
+/// scrolling and therefore do not persist at the same screen coordinate.
+/// Adjacent persistent edge pixels form a small cluster (a one or two pixel
+/// border plus antialiasing); the middle of that cluster is a stable estimate
+/// of the chrome boundary.
 pub fn infer_content_rect(images: &[Image]) -> Option<ContentRect> {
     if images.len() < 2 {
         return None;
@@ -680,7 +737,7 @@ pub fn infer_content_rect(images: &[Image]) -> Option<ContentRect> {
                 };
                 let gx = (gray(x + 1, y) - gray(x - 1, y)).abs();
                 let gy = (gray(x, y + 1) - gray(x, y - 1)).abs();
-                edges[y * width + x] = gx + gy > 24;
+                edges[y * width + x] = gx + gy > 8;
             }
         }
         for index in 0..persistent.len() {
@@ -712,30 +769,205 @@ pub fn infer_content_rect(images: &[Image]) -> Option<ContentRect> {
         row_prefix[y + 1] = row_prefix[y] + stable_rows[y];
     }
 
-    let mut top = None;
-    for y in 10..height / 3 {
+    // Full-width horizontal border rows and full-height vertical border columns.
+    let mut row_edge = vec![false; height];
+    for y in 0..height {
         let run = longest_run((0..width).map(|x| persistent[y * width + x]));
-        let stable_above = row_prefix[y] as f64 / (y * width).max(1) as f64;
-        if run * 100 >= width * 55 && stable_above >= 0.9 && top.is_none() && y + 2 < height {
-            top = Some(y + 2);
-        }
+        row_edge[y] = run * 100 >= width * 50;
     }
-    let mut left = None;
-    for x in 40..width / 2 {
+    let mut column_edge = vec![false; width];
+    for x in 0..width {
         let run = longest_run((0..height).map(|y| persistent[y * width + x]));
-        let stable_left = column_prefix[x] as f64 / (x * height).max(1) as f64;
-        if run * 100 >= height * 55 && stable_left >= 0.75 && x + 1 >= 80 {
-            left = Some(x + 1);
+        column_edge[x] = run * 100 >= height * 50;
+    }
+
+    let stable_below = |y: usize| {
+        (row_prefix[height] - row_prefix[y]) as f64 / ((height - y) * width).max(1) as f64
+    };
+    let stable_left = |x: usize| column_prefix[x] as f64 / (x * height).max(1) as f64;
+    let stable_right = |x: usize| {
+        (column_prefix[width] - column_prefix[x]) as f64 / ((width - x) * height).max(1) as f64
+    };
+    // A moving gradient or striped background can leave a permanent edge at a
+    // screen row/column even though its pixels move. Fixed chrome must also be
+    // stable in the immediate neighborhood of the candidate edge.
+    let stable_row_band = |y: usize| {
+        let a = y.saturating_sub(2);
+        let b = (y + 3).min(height);
+        (row_prefix[b] - row_prefix[a]) as f64 / ((b - a) * width).max(1) as f64
+    };
+    let stable_column_band = |x: usize| {
+        let a = x.saturating_sub(2);
+        let b = (x + 3).min(width);
+        (column_prefix[b] - column_prefix[a]) as f64 / ((b - a) * height).max(1) as f64
+    };
+
+    let left_flags: Vec<bool> = (0..width)
+        .map(|x| {
+            x >= 8
+                && x < width / 2
+                && column_edge[x]
+                && stable_left(x) >= 0.72
+                && stable_column_band(x) >= 0.55
+        })
+        .collect();
+    let right_flags: Vec<bool> = (0..width)
+        .map(|x| {
+            x >= width / 2
+                && x + 8 < width
+                && column_edge[x]
+                && stable_right(x) >= 0.72
+                && stable_column_band(x) >= 0.55
+        })
+        .collect();
+    let left_edge = merged_clusters(&left_flags, 0, width, 2)
+        .into_iter()
+        .rfind(|(a, b)| b - a <= 8)
+        .map(|(a, b)| ((a + b).div_ceil(2) + 1).min(width));
+    let right_edge = merged_clusters(&right_flags, width / 2, width, 2)
+        .into_iter()
+        .find(|(a, b)| b - a <= 8)
+        .map(|(a, b)| ((a + b) / 2).max(1));
+    let content_left = left_edge.unwrap_or(0);
+    let content_right = right_edge.unwrap_or(width);
+
+    // A gradient or translucent header often has no full-width horizontal
+    // border at all.  The first row whose temporal variance leaves the chrome
+    // plateau is the exact content start; a stable prefix handles opaque chrome
+    // whose first content row happens to be blank.  A uniform blank margin is
+    // rejected by requiring visible texture in the content columns.
+    let stable_prefix = {
+        let mut end = 0;
+        while end < height && stable_rows[end] * 100 >= width * 90 {
+            end += 1;
+        }
+        if end >= 8
+            && end <= height / 2
+            && (end <= 24
+                || band_texture_range(&images[0], 0, end, content_left, content_right) >= 1.0)
+        {
+            Some(end)
+        } else {
+            None
+        }
+    };
+    let stable_suffix = {
+        let mut start = height;
+        while start > 0 && stable_rows[start - 1] * 100 >= width * 90 {
+            start -= 1;
+        }
+        if height - start >= 16
+            && start >= height / 2
+            && band_texture_range(&images[0], start, height, content_left, content_right) >= 3.0
+        {
+            Some(start)
+        } else {
+            None
+        }
+    };
+
+    let top_flags: Vec<bool> = (0..height)
+        .map(|y| y >= 8 && y < height / 2 && row_edge[y])
+        .collect();
+    let bottom_flags: Vec<bool> = (0..height)
+        .map(|y| {
+            y >= height / 2
+                && y + 8 < height
+                && row_edge[y]
+                && stable_below(y) >= 0.85
+                && stable_row_band(y) >= 0.5
+        })
+        .collect();
+
+    // Header: use the bottom-most border cluster above the middle of the frame.
+    let top_edge = merged_clusters(&top_flags, 0, height, 2)
+        .into_iter()
+        .find(|(a, b)| b - a <= 8)
+        .map(|(a, mut b)| {
+            // The stable border row itself is sometimes not a gradient peak.
+            // Walk through at most a few stable rows before the moving content.
+            let mut extra = 0;
+            while b + 1 < height
+                && extra < 3
+                && stable_rows[b + 1] > 0
+                && stable_rows[b + 1] * 100 >= width * 88
+            {
+                b += 1;
+                extra += 1;
+            }
+            if stable_rows[b] > 0 && stable_rows[b] * 100 >= width * 88 {
+                (b + 1).min(height)
+            } else {
+                ((a + b).div_ceil(2) + 1).min(height)
+            }
+        });
+    // Footer: use the first border cluster in the lower half.
+    let bottom_edge = merged_clusters(&bottom_flags, height / 2, height, 2)
+        .into_iter()
+        .find(|(a, b)| b - a <= 8)
+        .map(|(a, b)| ((a + b).div_ceil(2)).max(1));
+
+    // A glass or gradient header has almost no stable pixels: backdrop blur
+    // follows the content beneath it.  Estimate the header plateau from the
+    // median temporal variance of the candidate chrome band and jump at the
+    // first row that is far noisier than that plateau.
+    let temporal = geometry::temporal_row_variance(images);
+    let mut motion_end = 0;
+    if top_edge.is_some() || stable_prefix.is_some() {
+        for y in 8..height / 2 {
+            let start = y.saturating_sub(6);
+            let baseline = median_f64(&temporal[start..y]);
+            if baseline > 900. {
+                continue;
+            }
+            let jump = temporal[y] - baseline;
+            if jump < 60. {
+                continue;
+            }
+            if (temporal[y] + 1.) / (baseline + 5.) > 6.0 {
+                motion_end = y;
+                break;
+            }
         }
     }
-    if top.is_none() && left.is_none() {
+    let motion_top = if motion_end >= 16
+        && band_texture_range(&images[0], 0, motion_end, content_left, content_right) >= 1.0
+    {
+        Some(motion_end)
+    } else {
+        None
+    };
+
+    let base_top = match (stable_prefix, motion_top) {
+        (Some(stable), Some(motion)) => Some(stable.min(motion)),
+        (Some(stable), None) => Some(stable),
+        (None, Some(motion)) => Some(motion),
+        (None, None) => None,
+    };
+    let top = match (top_edge, base_top) {
+        // A stable band can continue into a blank first content row; the fixed
+        // border itself is the exact boundary.
+        (Some(edge), Some(base)) if base > edge + 8 => edge,
+        _ => base_top.unwrap_or(0),
+    };
+    let bottom = match (bottom_edge, stable_suffix) {
+        (Some(edge), Some(stable)) if (edge as i32 - stable as i32).abs() <= 6 => Some(stable),
+        _ => bottom_edge.or(stable_suffix),
+    }
+    .unwrap_or(height);
+    let left = left_edge.unwrap_or(0);
+    let right = right_edge.unwrap_or(width);
+    if top >= bottom || left >= right || bottom - top < 24 || right - left < 24 {
+        return None;
+    }
+    if top == 0 && bottom == height && left == 0 && right == width {
         None
     } else {
         Some(ContentRect {
-            left: left.unwrap_or(0),
-            top: top.unwrap_or(0),
-            right: width,
-            bottom: height,
+            left,
+            top,
+            right,
+            bottom,
         })
     }
 }
@@ -760,6 +992,64 @@ fn shift_frame_x(image: &Image, dx: i32) -> SwResult<Image> {
         }
     }
     Ok(out)
+}
+
+/// Align small horizontal capture drift before chrome inference.
+///
+/// Content detection looks for edges that stay at one screen coordinate. A few
+/// pixels of capture drift would otherwise smear every sidebar border and make
+/// a fixed rail invisible. Scroll positions are not needed for this 1-D column
+/// profile registration.
+pub fn align_for_content_detection(images: &[Image]) -> SwResult<Vec<Image>> {
+    if images.len() < 2 {
+        return Ok(images.to_vec());
+    }
+    let width = images[0].width;
+    let reference = Feature::extract(&images[0]).cols;
+    let mut aligned = Vec::with_capacity(images.len());
+    aligned.push(images[0].clone());
+    for image in &images[1..] {
+        let cols = Feature::extract(image).cols;
+        let mut best_dx = 0i32;
+        let mut best_corr = 0.0f64;
+        let mut zero_corr = 0.0f64;
+        for dx in -12i32..=12 {
+            let start = dx.max(0) as usize;
+            let end = (width as i32 + dx).min(width as i32).max(0) as usize;
+            if end <= start + 8 {
+                continue;
+            }
+            let (mut sa, mut sb, mut saa, mut sbb, mut sab) = (0f64, 0f64, 0f64, 0f64, 0f64);
+            for x in start..end {
+                let a = reference[x];
+                let b = cols[(x as i32 - dx) as usize];
+                sa += a;
+                sb += b;
+                saa += a * a;
+                sbb += b * b;
+                sab += a * b;
+            }
+            let n = (end - start) as f64;
+            let den = ((saa - sa * sa / n) * (sbb - sb * sb / n)).max(0.0).sqrt();
+            if den < 1e-5 {
+                continue;
+            }
+            let corr = (sab - sa * sb / n) / den;
+            if dx == 0 {
+                zero_corr = corr;
+            }
+            if corr > best_corr || (corr == best_corr && dx.abs() < best_dx.abs()) {
+                best_corr = corr;
+                best_dx = dx;
+            }
+        }
+        if best_dx != 0 && best_corr > 0.85 && best_corr > zero_corr + 0.1 {
+            aligned.push(shift_frame_x(image, best_dx)?);
+        } else {
+            aligned.push(image.clone());
+        }
+    }
+    Ok(aligned)
 }
 
 fn estimate_horizontal_shift(reference: &Image, target: &Image, dy: i64) -> Option<i32> {
@@ -1121,5 +1411,56 @@ mod tests {
             ..Default::default()
         };
         assert!(reconstruct(&[a], &[0], &o).is_err());
+    }
+
+    #[test]
+    fn detects_chrome_on_all_four_sides() {
+        let (w, h) = (240usize, 300usize);
+        let (header, left, right, footer) = (18usize, 40usize, 50usize, 24usize);
+        let frame_h = 150usize;
+        let content_left = left;
+        let content_right = w - right;
+        let content_top = header;
+        let content_bottom = frame_h - footer;
+        let mut page = Image::solid(w, h, [255, 255, 255]).unwrap();
+        for y in 0..h {
+            for x in 0..w {
+                page.set(
+                    x,
+                    y,
+                    [
+                        ((y * 19 + x * 7) % 251) as u8,
+                        ((y * 3 + x * 13) % 241) as u8,
+                        31,
+                    ],
+                );
+            }
+        }
+        let mut frames = Vec::new();
+        for scroll in [0usize, 42, 84] {
+            let mut frame = Image::solid(w, frame_h, [30, 30, 30]).unwrap();
+            for y in 0..frame_h {
+                for x in 0..w {
+                    let color = if y == header - 1
+                        || y == content_bottom
+                        || x == left - 1
+                        || x == content_right
+                    {
+                        [200, 30, 30]
+                    } else if y < header || x < left || x >= content_right || y >= content_bottom {
+                        [235, 235, 235]
+                    } else {
+                        page.pixel(x, scroll + y - header)
+                    };
+                    frame.set(x, y, color);
+                }
+            }
+            frames.push(frame);
+        }
+        let rect = infer_content_rect(&frames).expect("chrome should be detected");
+        assert_eq!(
+            (rect.left, rect.top, rect.right, rect.bottom),
+            (content_left, content_top, content_right, content_bottom)
+        );
     }
 }

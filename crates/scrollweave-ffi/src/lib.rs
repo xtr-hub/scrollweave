@@ -377,7 +377,9 @@ pub unsafe extern "C" fn sw_stitch_rgbs(
 
 // Layered reconstruction and planning ABI. The original C ABI functions
 // remain available unchanged for image load/save, compose and basic stitching.
-use scrollweave_core::layered::{self, ContentRect, LayeredOptions, Segmentation};
+use scrollweave_core::layered::{
+    self, infer_content_rect, ContentRect, LayeredOptions, Segmentation,
+};
 use scrollweave_core::planner::{self, Goal, PlannerInput, PlannerOptions};
 
 #[repr(C)]
@@ -403,6 +405,25 @@ pub struct SwLayeredConfig {
     pub flat_mask: SwMaskRef,
     pub training_indices: *const u32,
     pub training_count: usize,
+}
+
+#[repr(C)]
+pub struct SwContentRect {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+impl SwContentRect {
+    fn none() -> Self {
+        Self {
+            left: -1,
+            top: -1,
+            right: -1,
+            bottom: -1,
+        }
+    }
 }
 
 #[repr(C)]
@@ -667,6 +688,38 @@ unsafe fn mask_arg(value: &SwMaskRef, expected: usize) -> SwResult<Option<Vec<u8
     Ok(Some(
         std::slice::from_raw_parts(value.data, value.len).to_vec(),
     ))
+}
+
+#[no_mangle]
+/// # Safety
+/// The caller must pass valid pointers with the documented ownership/lifetime.
+///
+/// Detect persistent fixed chrome without estimating scroll positions.  A
+/// `left < 0` result means no rectangular content region was found.
+pub unsafe extern "C" fn sw_layered_detect_content(
+    inputs: *const SwRgbRef,
+    n: usize,
+    out: *mut SwContentRect,
+    error: *mut c_char,
+    cap: usize,
+) -> i32 {
+    run(error, cap, || {
+        if out.is_null() {
+            return Err(SwError::input("null content-region output pointer"));
+        }
+        let images = input_images(inputs, n)?;
+        let aligned = layered::align_for_content_detection(&images)?;
+        *out = match infer_content_rect(&aligned) {
+            Some(rect) => SwContentRect {
+                left: rect.left as i32,
+                top: rect.top as i32,
+                right: rect.right as i32,
+                bottom: rect.bottom as i32,
+            },
+            None => SwContentRect::none(),
+        };
+        Ok(())
+    })
 }
 
 #[no_mangle]

@@ -13,7 +13,7 @@ and copies the original image pixels into the output. No image content is genera
 ## Features
 
 - Layered reconstruction of vertically scrolling pages
-- Automatic fixed-header/sidebar detection
+- Automatic fixed header, footer, and left/right sidebar detection
 - Automatic small horizontal capture-drift correction
 - Automatic inner-pane detection for fixed application windows
 - Multi-band 2D gradient NCC with graph consensus for automatic offsets
@@ -180,6 +180,23 @@ python -m unittest discover -s tests/python
 python -m ruff format --check .
 python -m ruff check .
 ```
+
+For an end-to-end browser regression, build the native library and run the
+stdlib-only corpus harness (requires Node 22+ and Chrome or Chromium):
+
+```shell
+cargo build --release -p scrollweave-ffi
+python tools/web_smoke.py --count 120
+```
+
+It generates 120 real HTML pages with fixed headers, footers, sidebars, themes,
+responsive viewports and assorted content, captures scrolling viewport frames
+plus full-page truth in headless Chrome, and reports automatic and
+known-geometry reconstruction metrics in `output/web_smoke/`. Use
+`--no-capture` to re-evaluate an existing capture and `--explicit` to add the
+known-geometry reference run. See `docs/WEB_SMOKE.md` for the protocol and pass
+criteria. The dataset is deterministic and is not committed; the generator is
+`tools/web_corpus.py` and the DevTools capture helper is `tools/web_capture.mjs`.
 
 `research/reference/` contains a frozen Python research reference used for future
 parity work. It is not imported or installed by the package.

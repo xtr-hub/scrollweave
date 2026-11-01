@@ -172,6 +172,13 @@ def _configure(lib):
         c.c_size_t,
     ]
     lib.sw_layered_reconstruct_rgbs.restype = c.c_int32
+    lib.sw_layered_detect_content.argtypes = [
+        c.POINTER(_Ref),
+        c.c_size_t,
+        c.POINTER(_ContentRect),
+        *err,
+    ]
+    lib.sw_layered_detect_content.restype = c.c_int32
     lib.sw_layered_free_response.argtypes = [c.POINTER(_LayeredResponse)]
     lib.sw_layered_free_response.restype = None
     lib.sw_layered_plan.argtypes = [
@@ -467,6 +474,15 @@ class _LayeredResponse(c.Structure):
     ]
 
 
+class _ContentRect(c.Structure):
+    _fields_ = [
+        ('left', c.c_int32),
+        ('top', c.c_int32),
+        ('right', c.c_int32),
+        ('bottom', c.c_int32),
+    ]
+
+
 class _LayeredHandle:
     """Owns a native PlannerInput handle for later planning calls."""
 
@@ -485,6 +501,26 @@ class _LayeredHandle:
 
     def __del__(self):
         self.close()
+
+
+def detect_layered_content(images):
+    """Return (left, top, right, bottom) fixed-chrome content bounds, or None."""
+    lib = _load()
+    if not images:
+        raise InvalidArgumentError('at least one frame is required')
+    if len({(image.width, image.height) for image in images}) != 1:
+        raise InvalidArgumentError('all frames must share dimensions')
+    refs, pinned = _refs(images)
+    out = _ContentRect(-1, -1, -1, -1)
+    error = c.create_string_buffer(4096)
+    _check(
+        lib.sw_layered_detect_content(refs, len(images), c.byref(out), error, len(error)),
+        error,
+        'content-region detection',
+    )
+    if out.left < 0:
+        return None
+    return out.left, out.top, out.right, out.bottom
 
 
 def _layered_run(images, positions, viewport, options, diagnostics):

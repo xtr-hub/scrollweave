@@ -92,13 +92,23 @@ fn dense_score(
     if overlap < min_overlap {
         return None;
     }
+    // Feature gradients are intentionally zero on the outermost feature row and
+    // column.  Comparing those synthetic zeros makes an exact lower-overlap
+    // match look worse than a shifted high-overlap alias, so trim one border.
+    let inner_startx = (startx + 1).min(endx);
+    let inner_endx = (endx - 1).max(inner_startx);
+    let inner_starty = (starty + 1).min(endy);
+    let inner_endy = (endy - 1).max(inner_starty);
+    if inner_endx <= inner_startx || inner_endy <= inner_starty {
+        return None;
+    }
     let st = sample_step.max(1);
     let (mut sim, mut cnt, mut reliable) = (0f64, 0f64, 0f64);
-    for y in (starty..endy).step_by(st) {
+    for y in (inner_starty..inner_endy).step_by(st) {
         let yy = (y - dy) as usize;
         let y = y as usize;
         let rowweight = activity.map_or(1., |v| v[y].max(0.06));
-        for x in (startx..endx).step_by(st) {
+        for x in (inner_startx..inner_endx).step_by(st) {
             let xx = (x - dx) as usize;
             let x = x as usize;
             let pa = y * a.width + x;
@@ -123,9 +133,163 @@ fn dense_score(
     }
     let similarity = sim / cnt;
     let inlier = reliable / cnt;
-    let score = 0.65 * similarity + 0.35 * inlier - 0.10 * (1. - overlap);
+    // A small overlap tie-breaker must not outvote a near-exact pixel match:
+    // repeated cards can otherwise win with more overlap but visible drift.
+    let score = 0.65 * similarity + 0.35 * inlier - 0.01 * (1. - overlap);
     Some((score, overlap))
 }
+fn downsample_gray(feature: &Feature, factor: usize) -> (usize, usize, Vec<f32>) {
+    let width = (feature.width / factor).max(1);
+    let height = (feature.height / factor).max(1);
+    let mut out = vec![0f32; width * height];
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = 0u32;
+            let mut count = 0usize;
+            for sy in y * factor..(y * factor + factor).min(feature.height) {
+                for sx in x * factor..(x * factor + factor).min(feature.width) {
+                    sum += feature.gray[sy * feature.width + sx] as u32;
+                    count += 1;
+                }
+            }
+            out[y * width + x] = sum as f32 / count.max(1) as f32;
+        }
+    }
+    (width, height, out)
+}
+
+/// Coarse photometric candidates, independent of gradient structure.
+///
+/// Row projections and gradient NCC can be blind in blank or flat regions: the
+/// correct offset may have zero row correlation but an exact pixel match.  A
+/// small downsampled gray search keeps those offsets in the candidate set;
+/// full-resolution dense scoring still decides the winner.
+fn coarse_gray_candidates(a: &Feature, b: &Feature, min_overlap: f64) -> Vec<(i32, i32)> {
+    if a.width != b.width || a.height != b.height {
+        return vec![];
+    }
+    let factor = 6usize;
+    if a.width < factor * 8 || a.height < factor * 8 {
+        return vec![];
+    }
+    let (aw, ah, ga) = downsample_gray(a, factor);
+    let (bw, bh, gb) = downsample_gray(b, factor);
+    if aw != bw || ah != bh {
+        return vec![];
+    }
+    let max_dy = ah as i32 - 1;
+    let mut options = Vec::<(f64, i32)>::new();
+    for dy in -max_dy..=max_dy {
+        let start = 0i32.max(dy);
+        let end = (ah as i32).min(ah as i32 + dy);
+        if end <= start + 2 {
+            continue;
+        }
+        let overlap = (end - start) as f64 / ah as f64;
+        if overlap < min_overlap.max(0.06) {
+            continue;
+        }
+        let mut sum = 0f64;
+        let mut count = 0usize;
+        for y in start as usize..end as usize {
+            let by = (y as i32 - dy) as usize;
+            for x in 0..aw {
+                sum += (ga[y * aw + x] - gb[by * aw + x]).abs() as f64;
+                count += 1;
+            }
+        }
+        if count > 0 {
+            options.push((sum / count as f64 - 3.0 * (1.0 - overlap), dy));
+        }
+    }
+    options.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut bases = Vec::new();
+    for (_, dy) in options {
+        if bases.iter().all(|&old: &i32| (old - dy).abs() > 4) {
+            bases.push(dy);
+            if bases.len() >= 4 {
+                break;
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for base in bases {
+        let center = base * factor as i32;
+        for delta in -(factor as i32)..=factor as i32 {
+            let dy = center + delta;
+            if dy.abs() < ah as i32 && !out.contains(&dy) {
+                out.push(dy);
+            }
+        }
+    }
+    out.into_iter().map(|dy| (0, dy)).collect()
+}
+
+fn row_signatures(feature: &Feature, samples: usize) -> Vec<Vec<f32>> {
+    let width = feature.width;
+    let mut out = Vec::with_capacity(feature.height);
+    for y in 0..feature.height {
+        let mut row = Vec::with_capacity(samples);
+        for k in 0..samples {
+            let x = k * width.saturating_sub(1) / samples.max(1);
+            row.push(feature.gray[y * width + x] as f32);
+        }
+        out.push(row);
+    }
+    out
+}
+
+/// Search full-resolution vertical offsets using sparse row fingerprints.
+///
+/// This remains sensitive in blank or low-gradient bands where a row-projection
+/// correlation can be exactly zero; it also avoids the six-pixel quantization of
+/// the downsampled luma search.
+fn coarse_row_signature_candidates(a: &Feature, b: &Feature, min_overlap: f64) -> Vec<(i32, i32)> {
+    if a.width != b.width || a.height != b.height || a.width < 24 || a.height < 32 {
+        return vec![];
+    }
+    let samples = 16usize;
+    let step = 4usize;
+    let sa = row_signatures(a, samples);
+    let sb = row_signatures(b, samples);
+    let h = a.height as i32;
+    let mut options = Vec::<(f64, i32)>::new();
+    for dy in -(h - 1)..=h - 1 {
+        let start = 0i32.max(dy);
+        let end = h.min(h + dy);
+        if end <= start + 2 {
+            continue;
+        }
+        let overlap = (end - start) as f64 / h as f64;
+        if overlap < min_overlap.max(0.05) {
+            continue;
+        }
+        let mut sum = 0f64;
+        let mut count = 0usize;
+        for y in (start as usize..end as usize).step_by(step) {
+            let by = (y as i32 - dy) as usize;
+            for (va, vb) in sa[y].iter().zip(&sb[by]) {
+                sum += (va - vb).abs() as f64;
+                count += 1;
+            }
+        }
+        if count > 0 {
+            options.push((sum / count as f64 - 1.5 * (1.0 - overlap), dy));
+        }
+    }
+    options.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out = Vec::new();
+    for (_, dy) in options {
+        if out.iter().all(|&old: &i32| (old - dy).abs() > 4) {
+            out.push(dy);
+            if out.len() >= 10 {
+                break;
+            }
+        }
+    }
+    out.into_iter().map(|dy| (0, dy)).collect()
+}
+
 fn downsample_edge(feature: &Feature, factor: usize) -> (usize, usize, Vec<f32>) {
     let width = (feature.width / factor).max(1);
     let height = (feature.height / factor).max(1);
@@ -287,7 +451,7 @@ fn coarse_ncc_candidates(
     clusters
         .into_iter()
         .filter(|c| c.3.count_ones() >= 1)
-        .take(10)
+        .take(12)
         .map(|(dx, dy, _, _)| (dx * factor as i32, dy * factor as i32))
         .collect()
 }
@@ -310,7 +474,7 @@ pub fn match_pair(
         &b.rows,
         activity,
         ((h as f64) * min_overlap.max(0.12)).ceil() as usize,
-        8,
+        12,
     );
     let xs = if allow_horizontal {
         axis_candidates(
@@ -326,7 +490,11 @@ pub fn match_pair(
     // Candidate generation is 1-D; verify at most a few 2-D hypotheses.
     // Refining every shift at full resolution would be O(pairs * shifts * pixels).
     let mut coarse = Vec::<Match>::new();
-    for (xx, yy) in coarse_ncc_candidates(a, b, activity, allow_horizontal, min_overlap) {
+    for (xx, yy) in coarse_ncc_candidates(a, b, activity, allow_horizontal, min_overlap)
+        .into_iter()
+        .chain(coarse_gray_candidates(a, b, min_overlap))
+        .chain(coarse_row_signature_candidates(a, b, min_overlap))
+    {
         if let Some((score, overlap)) = dense_score(a, b, xx, yy, activity, 12, min_overlap) {
             coarse.push(Match {
                 dx: xx,
@@ -351,13 +519,14 @@ pub fn match_pair(
         }
     }
     coarse.sort_by(|a, b| b.score.total_cmp(&a.score));
+    coarse.dedup_by(|a, b| a.dx == b.dx && a.dy == b.dy);
     if coarse.is_empty() {
         return None;
     }
     let mut best: Option<Match> = None;
-    for coarse_match in coarse.iter().take(3) {
-        for dy in coarse_match.dy - 4..=coarse_match.dy + 4 {
-            for dx in coarse_match.dx - 4..=coarse_match.dx + 4 {
+    for coarse_match in coarse.iter().take(2) {
+        for dy in coarse_match.dy - 3..=coarse_match.dy + 3 {
+            for dx in coarse_match.dx - 3..=coarse_match.dx + 3 {
                 if !allow_horizontal && dx != 0 {
                     continue;
                 }
@@ -379,8 +548,8 @@ pub fn match_pair(
     let result = best?;
     // Pixel-level integer refinement around best. Output never needs interpolation.
     let mut refined = result.clone();
-    for dy in result.dy - 2..=result.dy + 2 {
-        for dx in result.dx - 2..=result.dx + 2 {
+    for dy in result.dy - 1..=result.dy + 1 {
+        for dx in result.dx - 1..=result.dx + 1 {
             if !allow_horizontal && dx != 0 {
                 continue;
             }

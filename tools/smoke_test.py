@@ -64,6 +64,7 @@ def main(argv=None):
     abi = native.sw_api_version()
     check(abi == 5, 'native ABI is v5', str(abi))
     check(hasattr(native, 'sw_layered_reconstruct_rgbs'), 'layered FFI symbol present')
+    check(hasattr(native, 'sw_layered_detect_content'), 'content-region FFI symbol present')
     check(hasattr(native, 'sw_layered_plan'), 'planner FFI symbol present')
 
     shot_paths = [args.fixtures / name for name in ('shot_01.png', 'shot_02.png', 'shot_03.png')]

@@ -88,7 +88,17 @@ fn weighted_median(mut pairs: Vec<(i32, f64)>) -> i32 {
 /// on positions by robust weighted medians. A single inconsistent cycle cannot
 /// silently drag all downstream nodes as in naive chain accumulation.
 pub fn solve(n: usize, mut edges: Vec<Edge>) -> PoseGraph {
-    edges.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
+    // Capture order is a useful prior: neighboring frames are the least likely
+    // to alias each other, so grow the initial spanning forest along the chain
+    // when those edges exist.  Long-range edges still vote after initialization
+    // and are rejected when they disagree with the chain.
+    edges.sort_by(|a, b| {
+        let a_adjacent = a.b == a.a + 1;
+        let b_adjacent = b.b == b.a + 1;
+        b_adjacent
+            .cmp(&a_adjacent)
+            .then_with(|| b.confidence.total_cmp(&a.confidence))
+    });
     let mut dsu = Dsu::new(n);
     let mut tree = Vec::new();
     for e in &edges {
@@ -178,6 +188,28 @@ pub fn solve(n: usize, mut edges: Vec<Edge>) -> PoseGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn adjacent_chain_wins_over_a_confident_long_alias() {
+        let m = |dy, confidence| Match {
+            dx: 0,
+            dy,
+            score: 0.99,
+            overlap: 0.5,
+            confidence,
+        };
+        let graph = solve(
+            3,
+            vec![
+                Edge::new(0, 1, &m(100, 0.5)),
+                Edge::new(1, 2, &m(100, 0.5)),
+                Edge::new(0, 2, &m(700, 0.99)),
+            ],
+        );
+        assert_eq!(graph.positions[1].unwrap().1, 100);
+        assert_eq!(graph.positions[2].unwrap().1, 200);
+        assert!(graph.rejected.iter().any(|edge| edge.a == 0 && edge.b == 2));
+    }
+
     #[test]
     fn graph_cycles() {
         let m = |dx, dy| Match {
