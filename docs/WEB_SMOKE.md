@@ -103,12 +103,18 @@ python tools/web_crawl.py https://docs.python.org/3/ --discover-depth 2 \
     --max-pages 25 --root output/web_crawl
 ```
 
-For HTTP(S) pages the capture helper warms up lazy content, identifies
-fixed/sticky elements attached to a viewport edge from computed CSS, hides those
-edge elements in the full-page truth, and records their rectangles.  Local
-`file://` pages and the generated corpus still use explicit `data-chrome`
-markers.  The default URL viewport is 1280x800; use `--viewport`, `--wait-ms`,
-`--step-fraction` and `--jitter` to tune captures.
+For HTTP(S) pages the capture helper warms up lazy content, disables CSS/Web
+Animations and media playback, identifies fixed/sticky elements attached to a
+viewport edge from computed CSS, hides those edge elements in the full-page
+truth, and records their rectangles.  Local `file://` pages and the generated
+corpus still use explicit `data-chrome` markers.  The default URL viewport is
+1280x800; use `--viewport`, `--wait-ms`, `--step-fraction` and `--jitter` to
+tune captures.
+
+The primary URL-crawl result is **browser viewport + automatic positions**:
+DOM edge geometry fixes the content rectangle, while ScrollWeave still estimates
+scroll positions itself.  A pure automatic viewport/position result is reported
+alongside it and is deliberately more fragile on real sites with complex chrome.
 
 Real sites may animate, rotate ads, use consent dialogs or load content after the
 last warm-up pass.  Treat a failure as a diagnostic and inspect the captured
@@ -156,4 +162,24 @@ python tools/web_smoke.py --count 120 --root output/web_smoke --no-capture --exp
 
 The earlier 32-page development corpus also passes 32/32 in both modes, and the
 pre-existing six-scenario and 15-frame regressions remain in the native suite.
+
+### Real-world URL smoke run (2026-11-02)
+
+A 20-URL public corpus (example.com, IANA, Python, Rust, MDN, Wikipedia, W3C,
+Debian, kernel.org, Apache, IETF, RFC Editor, NumPy, pandas, React, Node.js)
+captured 19 pages; `gnu.org` timed out during navigation and was isolated as a
+per-page error.
+
+| Mode | Pass |
+|---|---|
+| browser viewport + automatic positions | 16/19 |
+| known viewport + known positions | 10/19 |
+| pure automatic viewport + positions | 9/19 |
+
+The three remaining primary failures (`w3.org/WAI`, `numpy.org`, `nodejs.org`)
+are dynamic or sticky-overlay pages: fixed back-to-top/sticky footer widgets and
+small changing content bands.  Their reconstructed dimensions are exact; the
+residual differs only in those moving/overlay regions.  This is the expected
+role of the URL crawler: surface real-page instability and chrome edge cases
+rather than pretending arbitrary production sites are pixel-stable fixtures.
 

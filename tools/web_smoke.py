@@ -70,21 +70,21 @@ def _content_rect(capture: dict, expected: dict, viewport: tuple[int, int]):
         kind = rect.get('kind')
         found.setdefault(kind, []).append(rect)
     if found.get('left'):
-        left = max(round(r['x'] + r['width']) for r in found['left'] if r['x'] <= 1)
-        if left <= 0:
-            left = expected['left']
+        candidate = max(round(r['x'] + r['width']) for r in found['left'])
+        if candidate > 0:
+            left = candidate
     if found.get('top'):
-        top = max(round(r['y'] + r['height']) for r in found['top'] if r['y'] <= 1)
-        if top <= 0:
-            top = expected['top']
+        candidate = max(round(r['y'] + r['height']) for r in found['top'])
+        if candidate > 0:
+            top = candidate
     if found.get('right'):
-        right = min(round(r['x']) for r in found['right'] if r['x'] + r['width'] >= vw - 1)
-        if right >= vw:
-            right = expected['right']
+        candidate = min(round(r['x']) for r in found['right'])
+        if candidate < vw:
+            right = candidate
     if found.get('bottom'):
-        bottom = min(round(r['y']) for r in found['bottom'] if r['y'] + r['height'] >= vh - 1)
-        if bottom >= vh:
-            bottom = expected['bottom']
+        candidate = min(round(r['y']) for r in found['bottom'])
+        if candidate < vh:
+            bottom = candidate
     return left, top, right, bottom
 
 
@@ -163,7 +163,7 @@ def _save_image(image, path: Path) -> None:
     image.save(path)
 
 
-def evaluate_page(root: Path, page: dict, explicit: bool) -> dict:
+def evaluate_page(root: Path, page: dict, explicit: bool, browser_viewport: bool = False) -> dict:
     from scrollweave import Image, LayeredOptions, Viewport, stitch_layered
 
     capture = _load_info(root, page)
@@ -207,6 +207,23 @@ def evaluate_page(root: Path, page: dict, explicit: bool) -> dict:
         record['known']['pass'] = _pass(record['known']['metrics'], strict=True)
         _save_image(result.image, frame_root / 'result_known.png')
 
+    if browser_viewport:
+        started = time.perf_counter()
+        result = stitch_layered(
+            frames,
+            viewport=Viewport(top=top, bottom=bottom, left=left, right=right),
+            options=LayeredOptions(appearance=True, texture_strength=80.0),
+        )
+        record['dom'] = {
+            'seconds': round(time.perf_counter() - started, 3),
+            'scroll': list(result.scroll),
+            'viewport': [result.viewport.top, result.viewport.bottom],
+            'geometry_mode': result.geometry_mode.value,
+            'metrics': _compare(result.image, truth),
+        }
+        record['dom']['pass'] = _pass(record['dom']['metrics'])
+        _save_image(result.image, frame_root / 'result_dom.png')
+
     started = time.perf_counter()
     result = stitch_layered(
         frames,
@@ -228,12 +245,13 @@ def evaluate_page(root: Path, page: dict, explicit: bool) -> dict:
 
 
 def _evaluate_worker(args) -> dict:
-    root, page, explicit = args
+    root, page, explicit, *rest = args
+    browser_viewport = bool(rest[0]) if rest else False
     for path in (str(ROOT), str(ROOT / 'tools')):
         if path not in sys.path:
             sys.path.insert(0, path)
     try:
-        return evaluate_page(Path(root), page, explicit)
+        return evaluate_page(Path(root), page, explicit, browser_viewport)
     except Exception as error:  # keep the rest of the corpus useful
         return {
             'id': page['id'],
@@ -245,21 +263,26 @@ def _evaluate_worker(args) -> dict:
 
 
 def write_report(root: Path, summary: dict) -> None:
+    primary = summary.get('primary_name', 'auto')
+    primary_pass = summary.get('primary_pass', summary['auto_pass'])
+    label = 'browser viewport + automatic positions' if primary == 'dom' else 'automatic pipeline'
     lines = [
         '# ScrollWeave browser smoke report',
         '',
         f'- corpus: **{summary["count"]}** pages',
-        f'- automatic pipeline: **{summary["auto_pass"]}/{summary["count"]}**',
+        f'- {label}: **{primary_pass}/{summary["count"]}**',
     ]
+    if primary != 'auto':
+        lines.append(f'- pure automatic pipeline: **{summary["auto_pass"]}/{summary["count"]}**')
     if summary.get('known_evaluated'):
         lines.append(
             f'- known geometry + positions: **{summary["known_pass"]}/{summary["known_evaluated"]}**'
         )
     lines += [f'- total run time: {summary["seconds"]:.1f}s', '']
-    failures = [p for p in summary['pages'] if not p['auto']['pass']]
+    failures = [p for p in summary['pages'] if not p.get(primary, {}).get('pass')]
     if failures:
         lines += [
-            '## Automatic failures',
+            f'## {label.capitalize()} failures',
             '',
             '| page | chrome | viewport | truth | output | MAE | exact | note |',
             '|---|---|---|---|---|---|---|---|',
@@ -272,7 +295,7 @@ def write_report(root: Path, summary: dict) -> None:
                     f'{page["error"].replace("|", "/")[:120]} |'
                 )
                 continue
-            item = page['auto']
+            item = page.get(primary) or page['auto']
             metrics = item['metrics']
             notes = []
             if metrics['width_difference']:

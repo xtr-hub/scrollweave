@@ -523,6 +523,8 @@ def _estimate_scroll(frames: Sequence[Image], viewport: Viewport | None = None) 
         ]
     if not matching_frames:
         raise InvalidArgumentError('stitch_layered: no frames were supplied')
+    if len(matching_frames) == 1:
+        return (0,)
 
     def attempt(overlap: float):
         try:
@@ -649,7 +651,7 @@ def stitch_layered(
     # When no explicit region was found, keep the full frame instead.
     if viewport is None and len(positions) > 1:
         span = max(positions) - min(positions)
-        if span <= max(48, int(frames[0].height * 0.12)):
+        if span <= max(48, int(frames[0].height * 0.5)):
             viewport = Viewport(0, frames[0].height)
             band = viewport
     if len(positions) != len(frames):

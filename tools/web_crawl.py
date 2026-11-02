@@ -7,7 +7,8 @@ accepts real HTTP(S) or local file URLs.  For each page it:
 2. detects fixed/sticky elements attached to a viewport edge from computed CSS,
 3. captures scrolling viewport frames plus a full-page truth image with those
    edge elements hidden,
-4. evaluates automatic reconstruction and, optionally, known geometry.
+4. evaluates three modes: browser-viewport + automatic positions (primary),
+   pure automatic viewport/positions, and optionally known geometry.
 
 Real sites can contain animations, ads, consent overlays and lazy widgets that
 do not have a stable document-space truth.  Treat this as a diagnostic smoke
@@ -101,6 +102,9 @@ def _parse_viewport(text: str) -> tuple[int, int]:
 
 
 def main(argv=None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(errors='replace')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('urls', nargs='*', help='HTTP(S) or file:// URLs')
     parser.add_argument('--urls-file', type=Path)
@@ -124,8 +128,8 @@ def main(argv=None) -> int:
     urls = list(args.urls)
     if args.urls_file:
         urls.extend(
-            line.strip()
-            for line in args.urls_file.read_text(encoding='utf-8').splitlines()
+            line.strip().lstrip('\ufeff')
+            for line in args.urls_file.read_text(encoding='utf-8-sig').splitlines()
             if line.strip() and not line.lstrip().startswith('#')
         )
     if not urls:
@@ -216,16 +220,22 @@ def main(argv=None) -> int:
                 'bottom': page['viewport'][1],
             },
         }
-        record = _evaluate_worker((str(root), record_page, args.explicit))
+        record = _evaluate_worker((str(root), record_page, args.explicit, True))
         record['url'] = page['url']
+        record['dynamic'] = bool(capture.get('dynamic'))
         records.append(record)
     elapsed = time.perf_counter() - started
     known_evaluated = sum(1 for record in records if 'known' in record)
+    dom_pass = sum(1 for record in records if record.get('dom', {}).get('pass'))
     summary = {
         'schema': 1,
         'count': len(records),
         'corpus_count': len(pages),
         'seconds': elapsed,
+        'primary_name': 'dom',
+        'primary_pass': dom_pass,
+        'dom_pass': dom_pass,
+        'dynamic_count': sum(1 for record in records if record.get('dynamic')),
         'auto_pass': sum(1 for record in records if record.get('auto', {}).get('pass')),
         'known_evaluated': known_evaluated,
         'known_pass': sum(1 for record in records if record.get('known', {}).get('pass')),
@@ -239,10 +249,11 @@ def main(argv=None) -> int:
     )
     write_report(root, summary)
     print(
-        f'CRAWL auto {summary["auto_pass"]}/{summary["count"]}'
+        f'CRAWL dom {dom_pass}/{summary["count"]}, auto {summary["auto_pass"]}/{summary["count"]}'
         + (f', known {summary["known_pass"]}/{known_evaluated}' if known_evaluated else '')
+        + f', dynamic {summary["dynamic_count"]}'
     )
-    return 0 if summary['auto_pass'] == summary['count'] else 1
+    return 0 if dom_pass == summary['count'] else 1
 
 
 if __name__ == '__main__':

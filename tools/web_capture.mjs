@@ -78,6 +78,15 @@ async function evaluate(send, sessionId, expression, awaitPromise = false) {
   return result.result ? result.result.value : undefined;
 }
 
+async function screenshotData(send, sessionId) {
+  const result = await send(
+    'Page.captureScreenshot',
+    { format: 'png', fromSurface: true, captureBeyondViewport: false },
+    sessionId,
+  );
+  return result.data;
+}
+
 async function screenshot(send, sessionId, path, clip = null) {
   const params = { format: 'png', fromSurface: true, captureBeyondViewport: !!clip };
   if (clip) params.clip = { x: 0, y: 0, width: clip.width, height: clip.height, scale: 1 };
@@ -176,12 +185,13 @@ async function probeChrome(send, sessionId, generic) {
           const r = el.getBoundingClientRect();
           if (r.width < 16 || r.height < 8) continue;
           if (hidden.some(parent => parent.contains(el))) continue;
-          const edge = 2;
+          const edgeX = vw * 0.05;
+          const edgeY = vh * 0.05;
           let kind = null;
-          if (r.top <= edge && r.width >= vw * 0.25) kind = 'top';
-          else if (r.bottom >= vh - edge && r.width >= vw * 0.25) kind = 'bottom';
-          else if (r.left <= edge && r.height >= vh * 0.2) kind = 'left';
-          else if (r.right >= vw - edge && r.height >= vh * 0.2) kind = 'right';
+          if (r.top <= edgeY && r.width >= vw * 0.4 && r.height <= vh * 0.5) kind = 'top';
+          else if (r.bottom >= vh - edgeY && r.width >= vw * 0.4 && r.height <= vh * 0.5) kind = 'bottom';
+          else if (r.left <= edgeX && r.height >= vh * 0.4 && r.width <= vw * 0.5) kind = 'left';
+          else if (r.right >= vw - edgeX && r.height >= vh * 0.4 && r.width <= vw * 0.5) kind = 'right';
           if (!kind || seen.has(el)) continue;
           seen.add(el);
           hidden.push(el);
@@ -244,6 +254,9 @@ async function main() {
     const sessionId = attached.sessionId;
     await send('Page.enable', {}, sessionId);
     await send('Runtime.enable', {}, sessionId);
+    await send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
+    }, sessionId);
     const total = job.pages.length;
     for (let i = 0; i < total; i++) {
       const page = job.pages[i];
@@ -264,6 +277,19 @@ async function main() {
       await navigateWithRetry(send, sessionId, url);
       await waitForReady(send, sessionId);
       if (generic) {
+        // Reduce temporal noise in pages that CSS-animate banners, carousels or
+        // caret-like widgets.  JavaScript timers can still update content.
+        await evaluate(send, sessionId, `(() => {
+          const style = document.createElement('style');
+          style.textContent = '*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}';
+          (document.head || document.documentElement).appendChild(style);
+          document.documentElement.style.scrollBehavior = 'auto';
+          document.querySelectorAll('video,audio').forEach(el => { try { el.pause(); } catch {} });
+          if (document.getAnimations) {
+            document.getAnimations().forEach(animation => { try { animation.pause(); } catch {} });
+          }
+          return true;
+        })()`);
         await sleep(Number(page.wait_ms) || 700);
         await warmup(send, sessionId, Number(page.wait_ms) || 700);
       } else {
@@ -284,6 +310,13 @@ async function main() {
       const maxHeight = Math.max(1000, Number(page.max_height) || 30000);
       if (info.scrollHeight > maxHeight) {
         throw new Error(`page is too tall for the smoke capture: ${info.scrollHeight}px > ${maxHeight}px`);
+      }
+      let dynamic = false;
+      if (generic) {
+        const first = await screenshotData(send, sessionId);
+        await sleep(250);
+        const second = await screenshotData(send, sessionId);
+        dynamic = first !== second;
       }
       const scrolls = makeScrolls(info.scrollHeight, vh, page.step_fraction, page.jitter, page.index + 1);
       const frames = [];
@@ -324,6 +357,7 @@ async function main() {
         rects: info.rects,
         scrolls,
         frames,
+        dynamic,
         truth_height: fullHeight,
       };
       writeFileSync(join(captureDir, 'capture.json'), JSON.stringify(capture, null, 2));
