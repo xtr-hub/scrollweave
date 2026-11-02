@@ -19,7 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 DIST = 'scrollweave'
-VERSION = '0.9.4'
+VERSION = '0.9.5'
 
 
 def _platform():
